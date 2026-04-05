@@ -39,6 +39,16 @@ const {
   buildAgencyConfig,
 } = require("./src/agency.js");
 
+// Billing module
+const {
+  TIERS,
+  setupStripeProducts,
+  createCheckoutSession,
+  handleWebhook,
+  createPortalSession,
+  getAgencyByApiKey,
+} = require("./src/billing.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -428,17 +438,24 @@ function createServer(agencyConfig = DEFAULT_AGENCY) {
 
 // ── Express Server with Multi-Tenant Routing ──
 const app = express();
+
+// Raw body for Stripe webhook verification (must be before express.json)
+app.post("/api/billing/webhook", express.raw({ type: "application/json" }));
+
 app.use(express.json());
 
 // Health check
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "1.1.0",
+    version: "1.2.0",
     description: "Multi-tenant AI Visibility Scanner — scan websites for AI readiness and marketing health",
     endpoints: {
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
+      billing_checkout: "POST /api/billing/checkout",
+      billing_portal: "POST /api/billing/portal",
+      billing_webhook: "POST /api/billing/webhook",
     },
   });
 });
@@ -585,9 +602,183 @@ app.get("/api/agencies/:slug/usage", async (req, res) => {
   }
 });
 
+// ── Billing endpoints ──
+
+// One-time setup: create Stripe products + prices
+app.post("/api/billing/setup", async (req, res) => {
+  const adminKey = req.headers["x-admin-key"];
+  if (adminKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const result = await setupStripeProducts();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create checkout session (public — generates Stripe payment link)
+app.post("/api/billing/checkout", async (req, res) => {
+  const { tier, agency_name, email, slug, success_url, cancel_url } = req.body;
+
+  if (!tier || !agency_name || !email) {
+    return res.status(400).json({
+      error: "Missing required fields: tier, agency_name, email",
+      tiers: Object.keys(TIERS),
+    });
+  }
+
+  if (!TIERS[tier]) {
+    return res.status(400).json({ error: `Invalid tier. Choose: ${Object.keys(TIERS).join(", ")}` });
+  }
+
+  try {
+    const result = await createCheckoutSession({
+      tier,
+      agencyName: agency_name,
+      email,
+      slug,
+      successUrl: success_url,
+      cancelUrl: cancel_url,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Stripe webhook (raw body — parsed above before express.json)
+app.post("/api/billing/webhook", async (req, res) => {
+  const signature = req.headers["stripe-signature"];
+  if (!signature) {
+    return res.status(400).json({ error: "Missing stripe-signature header" });
+  }
+
+  try {
+    const result = await handleWebhook(req.body, signature);
+    res.json(result);
+  } catch (e) {
+    console.error("Webhook error:", e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Customer portal (agency authenticates with their API key)
+app.post("/api/billing/portal", async (req, res) => {
+  const apiKey = req.body.api_key || req.headers["x-api-key"];
+  if (!apiKey) {
+    return res.status(401).json({ error: "API key required" });
+  }
+
+  try {
+    const agency = await getAgencyByApiKey(apiKey);
+    if (!agency) return res.status(404).json({ error: "Agency not found" });
+    if (!agency.stripe_customer_id) {
+      return res.status(400).json({ error: "No billing account linked to this agency" });
+    }
+
+    const result = await createPortalSession(agency.stripe_customer_id, req.body.return_url);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Agency branding update (agency authenticates with their API key)
+app.patch("/api/agencies/:slug/branding", async (req, res) => {
+  const apiKey = req.query.key || req.headers["x-api-key"];
+  if (!apiKey) return res.status(401).json({ error: "API key required" });
+
+  const allowed = ["brand_name", "logo_url", "accent_color", "cta_text", "powered_by", "lead_webhook_url", "pricing_overrides"];
+  const updates = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) updates[key] = req.body[key];
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: "No valid fields to update", allowed });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) return res.status(503).json({ error: "Database not configured" });
+
+  try {
+    // Verify API key matches this slug
+    const lookup = await fetch(
+      `${supabaseUrl}/rest/v1/agencies?slug=eq.${encodeURIComponent(req.params.slug)}&api_key=eq.${encodeURIComponent(apiKey)}&active=eq.true&select=id&limit=1`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    const rows = await lookup.json();
+    if (!rows?.[0]) return res.status(403).json({ error: "Invalid API key for this agency" });
+
+    await fetch(
+      `${supabaseUrl}/rest/v1/agencies?id=eq.${rows[0].id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(updates),
+      }
+    );
+
+    res.json({ updated: Object.keys(updates), slug: req.params.slug });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pricing page data (public)
+app.get("/api/billing/plans", (_req, res) => {
+  const plans = Object.entries(TIERS).map(([key, tier]) => ({
+    tier: key,
+    name: tier.name,
+    price: `$${tier.price_monthly / 100}/mo`,
+    price_cents: tier.price_monthly,
+    scans_limit: tier.scans_limit >= 999999 ? "Unlimited" : tier.scans_limit,
+    features: tier.features,
+  }));
+  res.json({ plans });
+});
+
+// Checkout success page
+app.get("/billing/success", async (req, res) => {
+  const sessionId = req.query.session_id;
+  res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Subscription Active</title>
+<style>body{font-family:-apple-system,sans-serif;max-width:600px;margin:60px auto;text-align:center;color:#1a1a1a}
+h1{color:#6366f1}.check{font-size:64px;margin:20px}code{background:#f1f1f5;padding:2px 8px;border-radius:4px;font-size:14px}</style></head>
+<body>
+<div class="check">&#10003;</div>
+<h1>You're all set!</h1>
+<p>Your AI Visibility Scanner subscription is active.</p>
+<p>Check your email for your API key and MCP endpoint URL.</p>
+<p style="color:#666;margin-top:32px">Session: <code>${sessionId || "N/A"}</code></p>
+</body></html>`);
+});
+
+// Checkout cancel page
+app.get("/billing/cancel", (_req, res) => {
+  res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Checkout Canceled</title>
+<style>body{font-family:-apple-system,sans-serif;max-width:600px;margin:60px auto;text-align:center;color:#1a1a1a}
+h1{color:#ef4444}</style></head>
+<body>
+<h1>Checkout Canceled</h1>
+<p>No charges were made. You can try again anytime.</p>
+<p><a href="/" style="color:#6366f1">Back to home</a></p>
+</body></html>`);
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`AI Visibility Scanner MCP App running on :${PORT}`);
   console.log(`Default MCP: http://localhost:${PORT}/mcp`);
   console.log(`Agency MCP:  http://localhost:${PORT}/a/:slug/mcp?key=xxx`);
+  console.log(`Billing:     http://localhost:${PORT}/api/billing/plans`);
 });
