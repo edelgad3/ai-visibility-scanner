@@ -366,4 +366,76 @@ function generateMarketingFindings(marketingHealth, checks) {
   return findings;
 }
 
-module.exports = { computeScores, getGrade, generateFindings, calculateMarketingHealth, generateMarketingFindings };
+// ── Data-driven score breakdown for drill-down UI ──
+
+const SCORE_RULES = {
+  geo: [
+    { name: 'Organization Schema', check: (c) => c.schema.has_organization, points: 15, desc: 'JSON-LD Organization markup identifies your business entity' },
+    { name: 'Service/Product Schema', check: (c) => c.schema.has_service || c.schema.has_product, points: 10, desc: 'Schema markup for your services or products' },
+    { name: 'FAQ Schema', check: (c) => c.schema.has_faq, points: 10, desc: 'Enables direct answer extraction by AI engines' },
+    { name: 'Person Schema', check: (c) => c.schema.has_person, points: 5, desc: 'Team/founder schema for E-E-A-T signals' },
+    { name: 'Breadcrumb Schema', check: (c) => c.schema.has_breadcrumb, points: 5, desc: 'Navigation path schema for site structure' },
+    { name: 'HowTo Schema', check: (c) => c.schema.has_howto, points: 5, desc: 'Step-by-step instruction markup' },
+    { name: 'robots.txt Present', check: (c) => c.robots.exists, points: 5, desc: 'Crawler directive file exists' },
+    { name: 'AI Crawlers Configured', check: (c) => c.robots.ai_crawlers_mentioned, points: 10, desc: 'Explicit rules for GPTBot, ClaudeBot, PerplexityBot' },
+    { name: 'XML Sitemap', check: (c) => c.sitemap.exists, points: 10, desc: 'URL index for crawler discovery' },
+    { name: 'llms.txt', check: (c) => c.llms_txt.exists, points: 15, desc: 'The fundamental AI context file for your business' },
+    { name: 'Canonical Tags', check: (c) => c.meta.has_canonical, points: 5, desc: 'Prevents duplicate content in AI training data' },
+    { name: 'Speakable Schema', check: (c) => c.schema.has_speakable, points: 5, desc: 'Voice assistant optimization markup' },
+  ],
+  multimodal: [
+    { name: 'OG Image', check: (c) => c.media.has_og_image, points: 15, desc: 'Visual preview for AI platforms and social sharing' },
+    { name: 'Twitter Card', check: (c) => c.media.has_twitter_card, points: 10, desc: 'X/Twitter card meta tags for rich previews' },
+    { name: 'Alt Text Coverage', check: (c) => c.media.images_with_alt_pct >= 80, points: 15, altCheck: (c) => c.media.images_with_alt_pct >= 50, altPoints: 8, desc: 'Image descriptions for multimodal AI understanding' },
+    { name: 'Video Content', check: (c) => c.media.has_video, points: 15, desc: 'Video signals rich, multimodal content' },
+    { name: 'ImageObject Schema', check: (c) => c.schema.has_image_object, points: 10, desc: 'Structured image metadata for AI indexing' },
+    { name: 'VideoObject Schema', check: (c) => c.schema.has_video_object, points: 10, desc: 'Structured video metadata for AI indexing' },
+    { name: 'WebP/AVIF Format', check: (c) => c.media.has_webp_avif, points: 10, desc: 'Modern image formats signal infrastructure quality' },
+    { name: 'Responsive Images (srcset)', check: (c) => c.media.has_srcset, points: 10, desc: 'Resolution-appropriate images for different contexts' },
+    { name: 'Infographic Detection', check: (c) => c.media.has_infographic, points: 5, desc: 'Visual data representation for AI analysis' },
+    { name: 'Digital Asset Schema', check: (c) => c.digital_assets.has_digital_assets && c.digital_assets.has_digital_asset_schema, points: 10, desc: 'Downloadable content with structured metadata' },
+    { name: 'Transcripts Available', check: (c) => c.digital_assets.has_transcripts, points: 5, desc: 'Text versions of audio/video for AI processing' },
+  ],
+  agent_ready: [
+    { name: 'llms.txt', check: (c) => c.llms_txt.exists, points: 10, desc: 'AI context file for agent discovery' },
+    { name: 'llms-full.txt', check: (c) => c.llms_full_txt.exists, points: 5, desc: 'Extended context with full business details' },
+    { name: 'Agent Card (A2A)', check: (c) => c.agent_card.exists, points: 10, desc: 'Agent-to-agent discovery endpoint' },
+    { name: 'UCP Endpoint', check: (c) => c.ucp.exists, points: 5, desc: 'Universal Commerce Protocol for AI purchasing' },
+    { name: 'WebMCP Forms', check: (c) => c.aeo.has_declarative_webmcp, points: 15, desc: 'Declarative form attributes AI agents can execute' },
+    { name: 'Semantic HTML (5+)', check: (c) => c.aeo.semantic_score >= 5, points: 10, altCheck: (c) => c.aeo.semantic_score >= 3, altPoints: 5, desc: 'Rich semantic tags for AI content parsing' },
+    { name: 'ARIA Labels (5+)', check: (c) => c.aeo.aria_count >= 5, points: 5, desc: 'Accessible labels for interactive elements' },
+    { name: 'XML Sitemap', check: (c) => c.sitemap.exists, points: 5, desc: 'URL discovery for agent crawling' },
+    { name: 'Not SPA-Only', check: (c) => !c.media.is_spa, points: 10, desc: 'Server-rendered content AI can read without JS' },
+    { name: 'Schema Count (3+)', check: (c) => c.schema.schema_count >= 3, points: 5, desc: 'Rich structured data coverage' },
+    { name: 'Structured Contact', check: (c) => c.meta.has_structured_contact, points: 5, desc: 'Machine-readable contact information' },
+    { name: 'Digital Asset Schema', check: (c) => c.digital_assets.has_digital_assets && c.digital_assets.has_digital_asset_schema, points: 5, desc: 'Downloadable content with structured metadata' },
+  ],
+};
+
+function getScoreBreakdown(dimension, checks) {
+  const rules = SCORE_RULES[dimension];
+  if (!rules) return [];
+
+  return rules.map(rule => {
+    let passed = false;
+    let awarded = 0;
+    try {
+      if (rule.check(checks)) {
+        passed = true;
+        awarded = rule.points;
+      } else if (rule.altCheck && rule.altCheck(checks)) {
+        passed = true;
+        awarded = rule.altPoints;
+      }
+    } catch { /* check failed — field missing */ }
+    return {
+      name: rule.name,
+      description: rule.desc,
+      points: awarded,
+      maxPoints: rule.points,
+      passed,
+    };
+  });
+}
+
+module.exports = { computeScores, getGrade, generateFindings, calculateMarketingHealth, generateMarketingFindings, getScoreBreakdown };

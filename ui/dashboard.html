@@ -8,11 +8,20 @@
 </head>
 <body>
   <div id="app">
+    <!-- Loading / Progress -->
     <div id="loading">
       <div class="loader-ring"></div>
       <p class="loader-text">Scanning website...</p>
       <p class="loader-sub" id="loading-url"></p>
+      <div id="progress-stages">
+        <div class="stage" data-stage="endpoints"><span class="stage-dot"></span>Probing AI endpoints</div>
+        <div class="stage" data-stage="homepage"><span class="stage-dot"></span>Analyzing homepage</div>
+        <div class="stage" data-stage="subpages"><span class="stage-dot"></span>Scanning subpages</div>
+        <div class="stage" data-stage="scoring"><span class="stage-dot"></span>Computing scores</div>
+      </div>
     </div>
+
+    <!-- Dashboard -->
     <div id="dashboard" style="display:none">
       <!-- Header -->
       <header id="header">
@@ -32,7 +41,7 @@
       <!-- Score Hero -->
       <section class="score-hero">
         <div class="hero-main">
-          <div class="gauge-container" id="gauge-combined">
+          <div class="gauge-container">
             <svg class="gauge" viewBox="0 0 120 120">
               <circle class="gauge-bg" cx="60" cy="60" r="50" />
               <circle class="gauge-fill" cx="60" cy="60" r="50" id="gauge-combined-fill" />
@@ -52,10 +61,10 @@
             </div>
             <div class="card-score" id="ai-score">--</div>
             <div class="card-grade" id="ai-grade">--</div>
-            <div class="card-dims">
-              <div class="dim"><span class="dim-label">GEO</span><span class="dim-val" id="geo-score">--</span></div>
-              <div class="dim"><span class="dim-label">Multimodal</span><span class="dim-val" id="multi-score">--</span></div>
-              <div class="dim"><span class="dim-label">Agent-Ready</span><span class="dim-val" id="agent-score">--</span></div>
+            <div class="card-dims" id="ai-dims">
+              <div class="dim dim-clickable" data-dim="geo"><span class="dim-label">GEO</span><span class="dim-val" id="geo-score">--</span><span class="dim-arrow">&#x25B6;</span></div>
+              <div class="dim dim-clickable" data-dim="multimodal"><span class="dim-label">Multimodal</span><span class="dim-val" id="multi-score">--</span><span class="dim-arrow">&#x25B6;</span></div>
+              <div class="dim dim-clickable" data-dim="agent_ready"><span class="dim-label">Agent-Ready</span><span class="dim-val" id="agent-score">--</span><span class="dim-arrow">&#x25B6;</span></div>
             </div>
           </div>
           <div class="score-card mkt-card">
@@ -70,6 +79,19 @@
         </div>
       </section>
 
+      <!-- Drill-Down Panel (hidden by default) -->
+      <section id="drilldown-panel" class="drilldown-panel" style="display:none">
+        <div class="drilldown-header">
+          <h3 id="drilldown-title">Score Breakdown</h3>
+          <button class="btn btn-ghost btn-sm" id="drilldown-close">Close</button>
+        </div>
+        <div class="drilldown-summary">
+          <span id="drilldown-passed">0</span> passed &middot; <span id="drilldown-failed">0</span> failed &middot; <span id="drilldown-total">0</span>/<span id="drilldown-max">0</span> points
+        </div>
+        <div id="drilldown-list"></div>
+        <button class="btn btn-ghost btn-sm" id="drilldown-learn">Ask AI about this dimension</button>
+      </section>
+
       <!-- Revenue Impact -->
       <section class="revenue-bar" id="revenue-section">
         <div class="revenue-label">Estimated Monthly Revenue Impact</div>
@@ -79,6 +101,20 @@
           <span class="revenue-high" id="rev-high">--</span>
           <span class="revenue-unit">/mo</span>
         </div>
+      </section>
+
+      <!-- Competitor Comparison -->
+      <section class="compare-section" id="compare-section">
+        <h2 class="section-title">Competitor Comparison</h2>
+        <div class="compare-input">
+          <input type="url" id="competitor-url" placeholder="Enter competitor URL..." class="input" />
+          <button class="btn btn-primary" id="btn-compare-run">Compare</button>
+        </div>
+        <div id="compare-loading" style="display:none">
+          <div class="loader-ring loader-sm"></div>
+          <span>Scanning competitor...</span>
+        </div>
+        <div id="compare-results" style="display:none"></div>
       </section>
 
       <!-- Findings -->
@@ -104,15 +140,52 @@
         <div class="pages-table" id="pages-table"></div>
       </section>
 
-      <!-- Footer CTA -->
+      <!-- Footer -->
       <footer class="cta-footer">
-        <p>Want a detailed fix plan? Ask your AI assistant: <em>"Create a fix plan for the critical findings"</em></p>
         <div class="cta-btns">
           <button class="btn btn-primary" id="btn-fix-plan">Generate Fix Plan</button>
-          <button class="btn btn-secondary" id="btn-compare">Scan Competitor</button>
+          <button class="btn btn-secondary" id="btn-download">Download Report</button>
+          <button class="btn btn-secondary" id="btn-share">Share Results</button>
         </div>
         <p class="powered">Powered by <strong>Ethereal Media</strong> &mdash; The Ethereal Forge</p>
       </footer>
+    </div>
+
+    <!-- Commerce Modal -->
+    <div id="commerce-modal" class="modal" style="display:none">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-content">
+        <button class="modal-close" id="modal-close">&times;</button>
+        <h3 id="modal-title">Get This Fixed</h3>
+        <p id="modal-finding" class="modal-finding"></p>
+        <div class="tier-selector" id="tier-selector">
+          <div class="tier-card" data-tier="quick_fix">
+            <div class="tier-name">Quick Fix</div>
+            <div class="tier-price">$99</div>
+            <div class="tier-desc">Single finding fix</div>
+          </div>
+          <div class="tier-card selected" data-tier="full_audit">
+            <div class="tier-name">Full Audit Fix</div>
+            <div class="tier-price">$299</div>
+            <div class="tier-desc">All critical + important findings</div>
+          </div>
+          <div class="tier-card" data-tier="agent_access">
+            <div class="tier-name">Agent Access</div>
+            <div class="tier-price">$4,999</div>
+            <div class="tier-desc">Full Forge Build + ongoing optimization</div>
+          </div>
+        </div>
+        <form id="lead-form" class="lead-form">
+          <input name="name" placeholder="Full Name" required class="input" />
+          <input name="email" type="email" placeholder="Email" required class="input" />
+          <input name="company" placeholder="Company (optional)" class="input" />
+          <button type="submit" class="btn btn-primary btn-full">Get Started</button>
+        </form>
+        <div id="lead-success" style="display:none" class="lead-success">
+          <div class="success-icon">&#x2705;</div>
+          <p>Thank you! We'll be in touch within 24 hours.</p>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="./src/app.ts"></script>

@@ -25,6 +25,7 @@ const {
   generateFindings,
   calculateMarketingHealth,
   generateMarketingFindings,
+  getScoreBreakdown,
 } = require("./src/scoring.js");
 
 // Load bundled dashboard HTML (built by Vite)
@@ -250,6 +251,138 @@ function createServer() {
     async ({ url, max_pages }) => {
       const results = await performScan(url, max_pages);
       return buildScanResponse(results);
+    }
+  );
+
+  // App-only tool: compare_scan (side-by-side competitor comparison)
+  registerAppTool(
+    server,
+    "compare_scan",
+    {
+      description: "Scan a competitor and return side-by-side comparison",
+      inputSchema: {
+        url: z.string().url(),
+        competitor_url: z.string().url(),
+        max_pages: z.number().min(1).max(10).default(3),
+      },
+      _meta: { ui: { resourceUri: RESOURCE_URI, visibility: ["app"] } },
+    },
+    async ({ url, competitor_url, max_pages }) => {
+      const [primary, competitor] = await Promise.all([
+        performScan(url, max_pages),
+        performScan(competitor_url, max_pages),
+      ]);
+      const delta = {
+        ai_visibility: Math.round((primary.scores.ai_visibility.overall - competitor.scores.ai_visibility.overall) * 10) / 10,
+        marketing_health: Math.round((primary.scores.marketing_health.overall - competitor.scores.marketing_health.overall) * 10) / 10,
+        combined: Math.round((primary.scores.combined.overall - competitor.scores.combined.overall) * 10) / 10,
+        geo: primary.scores.ai_visibility.geo - competitor.scores.ai_visibility.geo,
+        multimodal: primary.scores.ai_visibility.multimodal - competitor.scores.ai_visibility.multimodal,
+        agent_ready: primary.scores.ai_visibility.agent_ready - competitor.scores.ai_visibility.agent_ready,
+      };
+      return {
+        structuredContent: { primary: primary.scores, competitor: competitor.scores, delta, primary_url: url, competitor_url },
+        _meta: {
+          ui: { resourceUri: RESOURCE_URI },
+          primary_findings: primary.findings,
+          competitor_findings: competitor.findings,
+          primary_checks: primary.checks,
+          competitor_checks: competitor.checks,
+        },
+      };
+    }
+  );
+
+  // App-only tool: get_score_breakdown (detailed dimension drill-down)
+  registerAppTool(
+    server,
+    "get_score_breakdown",
+    {
+      description: "Get detailed line-item breakdown for a score dimension",
+      inputSchema: {
+        dimension: z.enum(["geo", "multimodal", "agent_ready"]),
+        checks: z.any(),
+      },
+      _meta: { ui: { resourceUri: RESOURCE_URI, visibility: ["app"] } },
+    },
+    async ({ dimension, checks }) => {
+      const breakdown = getScoreBreakdown(dimension, checks);
+      const total = breakdown.reduce((s, r) => s + r.points, 0);
+      const max = breakdown.reduce((s, r) => s + r.maxPoints, 0);
+      return {
+        structuredContent: { dimension, breakdown, total, max, passed: breakdown.filter(r => r.passed).length, failed: breakdown.filter(r => !r.passed).length },
+      };
+    }
+  );
+
+  // App-only tool: submit_lead (commerce / booking)
+  registerAppTool(
+    server,
+    "submit_lead",
+    {
+      description: "Submit a lead for service booking",
+      inputSchema: {
+        name: z.string(),
+        email: z.string(),
+        company: z.string().optional(),
+        tier: z.enum(["quick_fix", "full_audit", "agent_access"]),
+        scan_url: z.string().url(),
+        findings_count: z.number().optional(),
+      },
+      _meta: { ui: { resourceUri: RESOURCE_URI, visibility: ["app"] } },
+    },
+    async (args) => {
+      const results = { success: true, message: "Lead captured" };
+
+      // Supabase lead capture
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+      if (supabaseUrl && supabaseKey) {
+        try {
+          await fetch(`${supabaseUrl}/rest/v1/leads`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: supabaseKey,
+              Authorization: `Bearer ${supabaseKey}`,
+              Prefer: "return=minimal",
+            },
+            body: JSON.stringify({
+              name: args.name,
+              email: args.email,
+              company: args.company || "",
+              tier: args.tier,
+              scan_url: args.scan_url,
+              findings_count: args.findings_count || 0,
+              source: "mcp_app_scanner",
+              created_at: new Date().toISOString(),
+            }),
+          });
+        } catch (e) {
+          console.error("Supabase lead insert failed:", e.message);
+        }
+      }
+
+      // Slack notification
+      const slackWebhook = process.env.SLACK_WEBHOOK_URL;
+      if (slackWebhook) {
+        try {
+          const tierLabels = { quick_fix: "Quick Fix ($99)", full_audit: "Full Audit Fix ($299)", agent_access: "Agent Access ($4,999)" };
+          await fetch(slackWebhook, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: `New lead from AI Visibility Scanner:\n*${args.name}* (${args.email})\nCompany: ${args.company || "N/A"}\nTier: ${tierLabels[args.tier] || args.tier}\nSite: ${args.scan_url}\nFindings: ${args.findings_count || 0}`,
+            }),
+          });
+        } catch (e) {
+          console.error("Slack notification failed:", e.message);
+        }
+      }
+
+      return {
+        structuredContent: { success: true, tier: args.tier, message: "We'll be in touch within 24 hours." },
+      };
     }
   );
 
