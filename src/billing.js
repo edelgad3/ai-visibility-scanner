@@ -138,15 +138,25 @@ async function createCheckoutSession({ tier, agencyName, email, slug, successUrl
 async function getPriceIdForTier(tier) {
   const s = getStripe();
 
-  // Search for product first
-  const products = await s.products.search({ query: 'metadata["app"]:"ai-visibility-scanner"' });
-  if (!products.data.length) return null;
+  // Try product search first
+  let productId = null;
+  try {
+    const products = await s.products.search({ query: 'metadata["app"]:"ai-visibility-scanner"' });
+    if (products.data.length) productId = products.data[0].id;
+  } catch {
+    // Search API may not be available in sandbox
+  }
 
-  const prices = await s.prices.list({
-    product: products.data[0].id,
-    active: true,
-  });
+  // Fallback: list all products and find by metadata
+  if (!productId) {
+    const allProducts = await s.products.list({ active: true, limit: 20 });
+    const match = allProducts.data.find((p) => p.metadata?.app === "ai-visibility-scanner");
+    if (match) productId = match.id;
+  }
 
+  if (!productId) return null;
+
+  const prices = await s.prices.list({ product: productId, active: true });
   const match = prices.data.find((p) => p.metadata.tier === tier);
   return match?.id || null;
 }
