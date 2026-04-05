@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Visibility Scanner</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="loading">
+      <div class="loader-ring"></div>
+      <p class="loader-text">Scanning website...</p>
+      <p class="loader-sub" id="loading-url"></p>
+    </div>
+    <div id="dashboard" style="display:none">
+      <!-- Header -->
+      <header id="header">
+        <div class="header-left">
+          <div class="brand">
+            <svg class="logo" viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            <span class="brand-name">AI Visibility Scanner</span>
+          </div>
+          <span class="client-name" id="client-name"></span>
+        </div>
+        <div class="header-right">
+          <span class="scan-date" id="scan-date"></span>
+          <button class="btn btn-ghost" id="btn-rescan">Re-scan</button>
+        </div>
+      </header>
+
+      <!-- Score Hero -->
+      <section class="score-hero">
+        <div class="hero-main">
+          <div class="gauge-container" id="gauge-combined">
+            <svg class="gauge" viewBox="0 0 120 120">
+              <circle class="gauge-bg" cx="60" cy="60" r="50" />
+              <circle class="gauge-fill" cx="60" cy="60" r="50" id="gauge-combined-fill" />
+            </svg>
+            <div class="gauge-label">
+              <span class="gauge-value" id="combined-score">--</span>
+              <span class="gauge-grade" id="combined-grade">--</span>
+            </div>
+          </div>
+          <div class="hero-title">Combined Score</div>
+        </div>
+        <div class="hero-cards">
+          <div class="score-card ai-card">
+            <div class="card-header">
+              <span class="card-icon">&#x1F916;</span>
+              <span class="card-title">AI Visibility</span>
+            </div>
+            <div class="card-score" id="ai-score">--</div>
+            <div class="card-grade" id="ai-grade">--</div>
+            <div class="card-dims">
+              <div class="dim"><span class="dim-label">GEO</span><span class="dim-val" id="geo-score">--</span></div>
+              <div class="dim"><span class="dim-label">Multimodal</span><span class="dim-val" id="multi-score">--</span></div>
+              <div class="dim"><span class="dim-label">Agent-Ready</span><span class="dim-val" id="agent-score">--</span></div>
+            </div>
+          </div>
+          <div class="score-card mkt-card">
+            <div class="card-header">
+              <span class="card-icon">&#x1F4C8;</span>
+              <span class="card-title">Marketing Health</span>
+            </div>
+            <div class="card-score" id="mkt-score">--</div>
+            <div class="card-grade" id="mkt-grade">--</div>
+            <div class="card-dims" id="mkt-dims"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Revenue Impact -->
+      <section class="revenue-bar" id="revenue-section">
+        <div class="revenue-label">Estimated Monthly Revenue Impact</div>
+        <div class="revenue-range">
+          <span class="revenue-low" id="rev-low">--</span>
+          <span class="revenue-sep">&mdash;</span>
+          <span class="revenue-high" id="rev-high">--</span>
+          <span class="revenue-unit">/mo</span>
+        </div>
+      </section>
+
+      <!-- Findings -->
+      <section class="findings-section">
+        <h2 class="section-title">Findings & Recommendations</h2>
+        <div class="findings-tabs">
+          <button class="tab active" data-priority="p0">Critical <span class="tab-count" id="count-p0">0</span></button>
+          <button class="tab" data-priority="p1">Important <span class="tab-count" id="count-p1">0</span></button>
+          <button class="tab" data-priority="p2">Nice-to-have <span class="tab-count" id="count-p2">0</span></button>
+        </div>
+        <div class="findings-list" id="findings-list"></div>
+      </section>
+
+      <!-- Infrastructure Checks -->
+      <section class="checks-section">
+        <h2 class="section-title">Infrastructure Checks</h2>
+        <div class="checks-grid" id="checks-grid"></div>
+      </section>
+
+      <!-- Pages Analyzed -->
+      <section class="pages-section">
+        <h2 class="section-title">Pages Analyzed</h2>
+        <div class="pages-table" id="pages-table"></div>
+      </section>
+
+      <!-- Footer CTA -->
+      <footer class="cta-footer">
+        <p>Want a detailed fix plan? Ask your AI assistant: <em>"Create a fix plan for the critical findings"</em></p>
+        <div class="cta-btns">
+          <button class="btn btn-primary" id="btn-fix-plan">Generate Fix Plan</button>
+          <button class="btn btn-secondary" id="btn-compare">Scan Competitor</button>
+        </div>
+        <p class="powered">Powered by <strong>Ethereal Media</strong> &mdash; The Ethereal Forge</p>
+      </footer>
+    </div>
+  </div>
+  <script type="module" src="./src/app.ts"></script>
+</body>
+</html>
