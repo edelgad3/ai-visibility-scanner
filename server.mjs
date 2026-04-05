@@ -28,6 +28,17 @@ const {
   getScoreBreakdown,
 } = require("./src/scoring.js");
 
+// Agency multi-tenant module
+const {
+  DEFAULT_AGENCY,
+  agencyAuth,
+  brandDashboard,
+  getTierPricing,
+  recordScanEvent,
+  routeLeadToAgency,
+  buildAgencyConfig,
+} = require("./src/agency.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -183,34 +194,47 @@ function buildScanResponse(results) {
   };
 }
 
-// ── MCP Server Factory (new instance per session) ──
-function createServer() {
+// ── MCP Server Factory (agency-aware) ──
+function createServer(agencyConfig = DEFAULT_AGENCY) {
+  const serverName = agencyConfig.brand_name || "AI Visibility Scanner";
+
   const server = new McpServer({
-    name: "ai-visibility-scanner",
+    name: serverName,
     version: "1.0.0",
   });
+
+  // Brand the dashboard HTML for this agency
+  const dashboardHTML = brandDashboard(DASHBOARD_HTML, agencyConfig);
 
   // Register UI resource
   registerAppResource(
     server,
     "Scanner Dashboard",
     RESOURCE_URI,
-    { description: "Interactive AI Visibility Scanner dashboard" },
+    { description: `${serverName} interactive dashboard` },
     async () => ({
       contents: [{
         uri: RESOURCE_URI,
         mimeType: RESOURCE_MIME_TYPE,
-        text: DASHBOARD_HTML,
+        text: dashboardHTML,
       }],
     })
   );
 
-  // Main tool: scan_website (visible to model + app)
+  // Wrap scan to add metering
+  async function scanWithMetering(url, maxPages, industry) {
+    const results = await performScan(url, maxPages, industry);
+    // Fire-and-forget metering
+    recordScanEvent(agencyConfig.id, results);
+    return results;
+  }
+
+  // Main tool: scan_website
   registerAppTool(
     server,
     "scan_website",
     {
-      description: "Scan any website for AI visibility and marketing health. Returns scores for GEO (Generative Engine Optimization), Multimodal readiness, Agent-Ready infrastructure, and 6-dimension Marketing Health. Identifies critical findings with prioritized fix recommendations and revenue impact estimates.",
+      description: `Scan any website for AI visibility and marketing health. Returns scores for GEO (Generative Engine Optimization), Multimodal readiness, Agent-Ready infrastructure, and 6-dimension Marketing Health. Identifies critical findings with prioritized fix recommendations and revenue impact estimates.`,
       inputSchema: {
         url: z.string().url().describe("The website URL to scan (e.g. https://example.com)"),
         max_pages: z.number().min(1).max(20).default(5).describe("Maximum subpages to scan (default: 5)"),
@@ -226,12 +250,12 @@ function createServer() {
       },
     },
     async ({ url, max_pages, industry }) => {
-      const results = await performScan(url, max_pages, industry);
+      const results = await scanWithMetering(url, max_pages, industry);
       return buildScanResponse(results);
     }
   );
 
-  // App-only tool: refresh_scan (hidden from model, callable from UI)
+  // App-only tool: refresh_scan
   registerAppTool(
     server,
     "refresh_scan",
@@ -249,12 +273,12 @@ function createServer() {
       },
     },
     async ({ url, max_pages }) => {
-      const results = await performScan(url, max_pages);
+      const results = await scanWithMetering(url, max_pages);
       return buildScanResponse(results);
     }
   );
 
-  // App-only tool: compare_scan (side-by-side competitor comparison)
+  // App-only tool: compare_scan
   registerAppTool(
     server,
     "compare_scan",
@@ -269,8 +293,8 @@ function createServer() {
     },
     async ({ url, competitor_url, max_pages }) => {
       const [primary, competitor] = await Promise.all([
-        performScan(url, max_pages),
-        performScan(competitor_url, max_pages),
+        scanWithMetering(url, max_pages),
+        scanWithMetering(competitor_url, max_pages),
       ]);
       const delta = {
         ai_visibility: Math.round((primary.scores.ai_visibility.overall - competitor.scores.ai_visibility.overall) * 10) / 10,
@@ -293,7 +317,7 @@ function createServer() {
     }
   );
 
-  // App-only tool: get_score_breakdown (detailed dimension drill-down)
+  // App-only tool: get_score_breakdown
   registerAppTool(
     server,
     "get_score_breakdown",
@@ -315,7 +339,7 @@ function createServer() {
     }
   );
 
-  // App-only tool: submit_lead (commerce / booking)
+  // App-only tool: submit_lead (agency-aware)
   registerAppTool(
     server,
     "submit_lead",
@@ -332,11 +356,10 @@ function createServer() {
       _meta: { ui: { resourceUri: RESOURCE_URI, visibility: ["app"] } },
     },
     async (args) => {
-      const results = { success: true, message: "Lead captured" };
-
-      // Supabase lead capture
       const supabaseUrl = process.env.SUPABASE_URL;
       const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+
+      // Supabase lead capture (with agency_id)
       if (supabaseUrl && supabaseKey) {
         try {
           await fetch(`${supabaseUrl}/rest/v1/leads`, {
@@ -350,11 +373,12 @@ function createServer() {
             body: JSON.stringify({
               name: args.name,
               email: args.email,
-              company: args.company || "",
-              tier: args.tier,
-              scan_url: args.scan_url,
-              findings_count: args.findings_count || 0,
-              source: "mcp_app_scanner",
+              company_name: args.company || "",
+              website_url: args.scan_url,
+              lead_score: args.findings_count || 0,
+              source: agencyConfig.slug === "ethereal" ? "mcp_app_scanner" : `agency_${agencyConfig.slug}`,
+              agency_id: agencyConfig.id || null,
+              notes: `Tier: ${args.tier}, Findings: ${args.findings_count || 0}`,
               created_at: new Date().toISOString(),
             }),
           });
@@ -363,16 +387,29 @@ function createServer() {
         }
       }
 
-      // Slack notification
+      // Route lead to agency webhook
+      routeLeadToAgency(agencyConfig, {
+        name: args.name,
+        email: args.email,
+        company: args.company,
+        tier: args.tier,
+        scan_url: args.scan_url,
+        findings_count: args.findings_count,
+      });
+
+      // Slack notification (Ethereal Media always gets notified)
       const slackWebhook = process.env.SLACK_WEBHOOK_URL;
       if (slackWebhook) {
         try {
-          const tierLabels = { quick_fix: "Quick Fix ($99)", full_audit: "Full Audit Fix ($299)", agent_access: "Agent Access ($4,999)" };
+          const pricing = getTierPricing(agencyConfig);
+          const tierLabel = pricing[args.tier]?.name || args.tier;
+          const tierPrice = pricing[args.tier]?.price || "";
+          const agencyLabel = agencyConfig.slug === "ethereal" ? "" : ` [via ${agencyConfig.name}]`;
           await fetch(slackWebhook, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              text: `New lead from AI Visibility Scanner:\n*${args.name}* (${args.email})\nCompany: ${args.company || "N/A"}\nTier: ${tierLabels[args.tier] || args.tier}\nSite: ${args.scan_url}\nFindings: ${args.findings_count || 0}`,
+              text: `New lead from AI Visibility Scanner${agencyLabel}:\n*${args.name}* (${args.email})\nCompany: ${args.company || "N/A"}\nTier: ${tierLabel} (${tierPrice})\nSite: ${args.scan_url}\nFindings: ${args.findings_count || 0}`,
             }),
           });
         } catch (e) {
@@ -389,7 +426,7 @@ function createServer() {
   return server;
 }
 
-// ── Express Server with Streamable HTTP Transport ──
+// ── Express Server with Multi-Tenant Routing ──
 const app = express();
 app.use(express.json());
 
@@ -397,45 +434,48 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "1.0.0",
-    description: "Scan websites for AI visibility and marketing health",
-    mcp_endpoint: "/mcp",
+    version: "1.1.0",
+    description: "Multi-tenant AI Visibility Scanner — scan websites for AI readiness and marketing health",
+    endpoints: {
+      default_mcp: "/mcp",
+      agency_mcp: "/a/:slug/mcp?key=xxx",
+    },
   });
 });
 
-// MCP endpoint — session management
-const sessions = new Map();
+// Session stores (keyed by transport session ID)
+const defaultSessions = new Map();
+const agencySessions = new Map();
+
+// ── Default MCP endpoint (Ethereal Media branding) ──
 
 app.post("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
 
-  if (sessionId && sessions.has(sessionId)) {
-    // Existing session: reuse transport
-    const transport = sessions.get(sessionId);
+  if (sessionId && defaultSessions.has(sessionId)) {
+    const transport = defaultSessions.get(sessionId);
     await transport.handleRequest(req, res, req.body);
     return;
   }
 
-  // New session: create server + transport, handle request, then store session
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
   });
-  const mcpServer = createServer();
+  const mcpServer = createServer(DEFAULT_AGENCY);
   await mcpServer.connect(transport);
 
-  // Store session after transport generates its ID during handleRequest
   await transport.handleRequest(req, res, req.body);
 
   if (transport.sessionId) {
-    sessions.set(transport.sessionId, transport);
-    transport.onclose = () => sessions.delete(transport.sessionId);
+    defaultSessions.set(transport.sessionId, transport);
+    transport.onclose = () => defaultSessions.delete(transport.sessionId);
   }
 });
 
 app.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (sessionId && sessions.has(sessionId)) {
-    const transport = sessions.get(sessionId);
+  if (sessionId && defaultSessions.has(sessionId)) {
+    const transport = defaultSessions.get(sessionId);
     await transport.handleRequest(req, res);
     return;
   }
@@ -444,16 +484,110 @@ app.get("/mcp", async (req, res) => {
 
 app.delete("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  if (sessionId && sessions.has(sessionId)) {
-    const transport = sessions.get(sessionId);
+  if (sessionId && defaultSessions.has(sessionId)) {
+    const transport = defaultSessions.get(sessionId);
     await transport.close();
-    sessions.delete(sessionId);
+    defaultSessions.delete(sessionId);
   }
   res.status(200).end();
+});
+
+// ── Agency MCP endpoint: /a/:slug/mcp ──
+
+app.post("/a/:slug/mcp", agencyAuth(), async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"];
+  const agency = req.agency;
+  const sessionKey = `${agency.slug}:${sessionId}`;
+
+  if (sessionId && agencySessions.has(sessionKey)) {
+    const transport = agencySessions.get(sessionKey);
+    await transport.handleRequest(req, res, req.body);
+    return;
+  }
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+  });
+  const agencyConfig = buildAgencyConfig(agency);
+  const mcpServer = createServer(agencyConfig);
+  await mcpServer.connect(transport);
+
+  await transport.handleRequest(req, res, req.body);
+
+  if (transport.sessionId) {
+    const key = `${agency.slug}:${transport.sessionId}`;
+    agencySessions.set(key, transport);
+    transport.onclose = () => agencySessions.delete(key);
+  }
+});
+
+app.get("/a/:slug/mcp", agencyAuth(), async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"];
+  const agency = req.agency;
+  const sessionKey = `${agency.slug}:${sessionId}`;
+
+  if (sessionId && agencySessions.has(sessionKey)) {
+    const transport = agencySessions.get(sessionKey);
+    await transport.handleRequest(req, res);
+    return;
+  }
+  res.status(400).json({ error: "No active session" });
+});
+
+app.delete("/a/:slug/mcp", agencyAuth(), async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"];
+  const agency = req.agency;
+  const sessionKey = `${agency.slug}:${sessionId}`;
+
+  if (sessionId && agencySessions.has(sessionKey)) {
+    const transport = agencySessions.get(sessionKey);
+    await transport.close();
+    agencySessions.delete(sessionKey);
+  }
+  res.status(200).end();
+});
+
+// ── Agency management endpoints (admin) ──
+
+app.get("/api/agencies/:slug/usage", async (req, res) => {
+  const adminKey = req.headers["x-admin-key"];
+  if (adminKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(503).json({ error: "Database not configured" });
+  }
+
+  try {
+    const resp = await fetch(
+      `${supabaseUrl}/rest/v1/agencies?slug=eq.${encodeURIComponent(req.params.slug)}&select=name,slug,tier,scans_used,scans_limit,active`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    const rows = await resp.json();
+    if (!rows?.[0]) return res.status(404).json({ error: "Agency not found" });
+
+    const agency = rows[0];
+    const eventsResp = await fetch(
+      `${supabaseUrl}/rest/v1/scan_events?agency_id=eq.${agency.id}&select=created_at,url,combined_score,grade&order=created_at.desc&limit=20`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    const events = await eventsResp.json();
+
+    res.json({
+      agency: { ...agency, usage_pct: Math.round((agency.scans_used / agency.scans_limit) * 100) },
+      recent_scans: events,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`AI Visibility Scanner MCP App running on :${PORT}`);
-  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`Default MCP: http://localhost:${PORT}/mcp`);
+  console.log(`Agency MCP:  http://localhost:${PORT}/a/:slug/mcp?key=xxx`);
 });

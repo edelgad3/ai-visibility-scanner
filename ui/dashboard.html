@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Visibility Scanner</title>
+  <title>{{BRAND_NAME}}</title>
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
 <body>
@@ -27,8 +27,8 @@
       <header id="header">
         <div class="header-left">
           <div class="brand">
-            <svg class="logo" viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-            <span class="brand-name">AI Visibility Scanner</span>
+            {{LOGO_HTML}}
+            <span class="brand-name">{{BRAND_NAME}}</span>
           </div>
           <span class="client-name" id="client-name"></span>
         </div>
@@ -147,7 +147,7 @@
           <button class="btn btn-secondary" id="btn-download">Download Report</button>
           <button class="btn btn-secondary" id="btn-share">Share Results</button>
         </div>
-        <p class="powered">Powered by <strong>Ethereal Media</strong> &mdash; The Ethereal Forge</p>
+        <p class="powered">{{POWERED_BY}}</p>
       </footer>
     </div>
 
@@ -156,7 +156,7 @@
       <div class="modal-backdrop" id="modal-backdrop"></div>
       <div class="modal-content">
         <button class="modal-close" id="modal-close">&times;</button>
-        <h3 id="modal-title">Get This Fixed</h3>
+        <h3 id="modal-title">{{CTA_TEXT}}</h3>
         <p id="modal-finding" class="modal-finding"></p>
         <div class="tier-selector" id="tier-selector">
           <div class="tier-card" data-tier="quick_fix">
