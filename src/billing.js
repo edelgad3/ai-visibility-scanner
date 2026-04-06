@@ -214,9 +214,17 @@ async function onCheckoutCompleted(session) {
 
   // Get subscription details for period end
   const s = getStripe();
-  const subscription = await s.subscriptions.retrieve(subscriptionId);
-  const periodEnd = new Date(subscription.current_period_end * 1000).toISOString();
-  const priceId = subscription.items.data[0]?.price?.id;
+  let periodEnd = null;
+  let priceId = null;
+  try {
+    const subscription = await s.subscriptions.retrieve(subscriptionId);
+    if (subscription.current_period_end) {
+      periodEnd = new Date(subscription.current_period_end * 1000).toISOString();
+    }
+    priceId = subscription.items.data[0]?.price?.id || null;
+  } catch (e) {
+    console.error("Subscription retrieve failed:", e.message);
+  }
 
   const tierConfig = TIERS[tier];
   if (!tierConfig) {
