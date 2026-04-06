@@ -7,18 +7,21 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { readFileSync } from "fs";
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import path from "path";
 import crypto from "crypto";
+import { URL } from "url";
+import dns from "dns/promises";
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Import existing scanning modules (CommonJS)
 const { probeEndpoints } = require("./src/endpoints.js");
-const { analyzePage, closeBrowser, discoverSubpages } = require("./src/dom-analyzer.js");
+const { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages } = require("./src/dom-analyzer.js");
 const {
   computeScores,
   getGrade,
@@ -59,112 +62,179 @@ try {
 
 const RESOURCE_URI = "ui://ethereal/scanner-dashboard.html";
 
+// ── Security utilities ──
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// SSRF protection: reject private/internal IPs
+const BLOCKED_IP_RANGES = [
+  /^127\./,                    // loopback
+  /^10\./,                     // RFC 1918
+  /^172\.(1[6-9]|2\d|3[01])\./, // RFC 1918
+  /^192\.168\./,               // RFC 1918
+  /^169\.254\./,               // link-local
+  /^0\./,                      // current network
+  /^::1$/,                     // IPv6 loopback
+  /^fd/i,                      // IPv6 private
+  /^fe80/i,                    // IPv6 link-local
+];
+
+async function validateScanUrl(urlStr) {
+  let parsed;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    throw new Error("Invalid URL");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Blocked protocol: ${parsed.protocol}. Only http/https allowed.`);
+  }
+
+  // Resolve hostname to IP and check against blocked ranges
+  try {
+    const addresses = await dns.resolve4(parsed.hostname).catch(() => []);
+    const addresses6 = await dns.resolve6(parsed.hostname).catch(() => []);
+    const allAddrs = [...addresses, ...addresses6];
+
+    for (const addr of allAddrs) {
+      for (const pattern of BLOCKED_IP_RANGES) {
+        if (pattern.test(addr)) {
+          throw new Error(`Blocked: ${parsed.hostname} resolves to private IP`);
+        }
+      }
+    }
+  } catch (e) {
+    if (e.message.startsWith("Blocked")) throw e;
+    // DNS resolution failed — let the scan fail naturally downstream
+  }
+
+  return parsed.href;
+}
+
+// Timing-safe key comparison
+function secureKeyCompare(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
 // ── Core scan logic (extracted from CLI) ──
 async function performScan(url, maxPages = 5, industry = "general") {
+  // SSRF protection: validate URL before any network requests
+  url = await validateScanUrl(url);
+
   const startTime = Date.now();
 
   const rawEndpoints = await probeEndpoints(url);
-  const homepageAnalysis = await analyzePage(url, "homepage", true);
 
-  const subpageCandidates = discoverSubpages(homepageAnalysis._internalLinks || [], maxPages);
-  const subpageResults = [];
-  for (const candidate of subpageCandidates) {
-    try {
-      const result = await analyzePage(candidate.url, "subpage", false);
-      if (result.status_code === 200) subpageResults.push(result);
-    } catch {
-      // Skip failed subpages
+  // Each scan gets its own browser instance — no shared singleton, no race conditions
+  const browser = await createBrowser();
+  try {
+    const homepageAnalysis = await analyzePage(url, "homepage", true, browser);
+
+    const subpageCandidates = discoverSubpages(homepageAnalysis._internalLinks || [], maxPages);
+    const subpageResults = [];
+    for (const candidate of subpageCandidates) {
+      try {
+        const result = await analyzePage(candidate.url, "subpage", false, browser);
+        if (result.status_code === 200) subpageResults.push(result);
+      } catch {
+        // Skip failed subpages
+      }
     }
-  }
-  await closeBrowser();
 
-  const checks = {
-    robots: rawEndpoints.robots,
-    sitemap: rawEndpoints.sitemap,
-    llms_txt: rawEndpoints.llms_txt,
-    llms_full_txt: rawEndpoints.llms_full_txt,
-    agent_card: rawEndpoints.agent_card,
-    ucp: rawEndpoints.ucp,
-    schema: homepageAnalysis.extracted.schema,
-    meta: homepageAnalysis.extracted.meta,
-    media: homepageAnalysis.extracted.media,
-    aeo: homepageAnalysis.extracted.aeo,
-    digital_assets: homepageAnalysis.extracted.digital_assets,
-  };
-
-  const aiScores = computeScores(checks);
-
-  const allPages = [homepageAnalysis, ...subpageResults].map((p) => ({
-    url: p.url,
-    type: p.type,
-    status_code: p.status_code,
-    response_time_ms: p.response_time_ms,
-    scores: p.scores,
-    overall: p.overall,
-    js_diff: p.js_diff,
-  }));
-
-  const marketingHealth = calculateMarketingHealth(allPages, checks);
-  const aiFindings = generateFindings(checks);
-  const marketingFindings = generateMarketingFindings(marketingHealth, checks);
-
-  for (const mf of marketingFindings) {
-    const entry = {
-      action: mf.action,
-      detail: mf.detail || "",
-      category: mf.category || "Marketing",
-      effort: mf.effort || "medium",
-      impact: mf.impact || "medium",
-      source: "marketing_health",
-      revenue_impact: mf.revenue_impact || {},
+    const checks = {
+      robots: rawEndpoints.robots,
+      sitemap: rawEndpoints.sitemap,
+      llms_txt: rawEndpoints.llms_txt,
+      llms_full_txt: rawEndpoints.llms_full_txt,
+      agent_card: rawEndpoints.agent_card,
+      ucp: rawEndpoints.ucp,
+      schema: homepageAnalysis.extracted.schema,
+      meta: homepageAnalysis.extracted.meta,
+      media: homepageAnalysis.extracted.media,
+      aeo: homepageAnalysis.extracted.aeo,
+      digital_assets: homepageAnalysis.extracted.digital_assets,
     };
-    if (mf.priority === "critical") aiFindings.p0.push(entry);
-    else if (mf.priority === "high") aiFindings.p1.push(entry);
-    else aiFindings.p2.push(entry);
-  }
 
-  const recommendations = [];
-  for (const priority of ["p0", "p1", "p2"]) {
-    for (const finding of aiFindings[priority]) {
-      recommendations.push({ priority: priority.toUpperCase(), ...finding });
+    const aiScores = computeScores(checks);
+
+    const allPages = [homepageAnalysis, ...subpageResults].map((p) => ({
+      url: p.url,
+      type: p.type,
+      status_code: p.status_code,
+      response_time_ms: p.response_time_ms,
+      scores: p.scores,
+      overall: p.overall,
+      js_diff: p.js_diff,
+    }));
+
+    const marketingHealth = calculateMarketingHealth(allPages, checks);
+    const aiFindings = generateFindings(checks);
+    const marketingFindings = generateMarketingFindings(marketingHealth, checks);
+
+    for (const mf of marketingFindings) {
+      const entry = {
+        action: mf.action,
+        detail: mf.detail || "",
+        category: mf.category || "Marketing",
+        effort: mf.effort || "medium",
+        impact: mf.impact || "medium",
+        source: "marketing_health",
+        revenue_impact: mf.revenue_impact || {},
+      };
+      if (mf.priority === "critical") aiFindings.p0.push(entry);
+      else if (mf.priority === "high") aiFindings.p1.push(entry);
+      else aiFindings.p2.push(entry);
     }
-  }
 
-  const combinedOverall = Math.round(((aiScores.overall * 0.5) + (marketingHealth.overall * 0.5)) * 10) / 10;
+    const recommendations = [];
+    for (const priority of ["p0", "p1", "p2"]) {
+      for (const finding of aiFindings[priority]) {
+        recommendations.push({ priority: priority.toUpperCase(), ...finding });
+      }
+    }
 
-  const revenueImpact = {
-    monthly_low: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_low || 0), 0),
-    monthly_mid: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_mid || 0), 0),
-    monthly_high: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_high || 0), 0),
-  };
+    const combinedOverall = Math.round(((aiScores.overall * 0.5) + (marketingHealth.overall * 0.5)) * 10) / 10;
 
-  let clientName = "";
-  try { clientName = new URL(url).hostname.replace("www.", ""); } catch { clientName = url; }
+    const revenueImpact = {
+      monthly_low: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_low || 0), 0),
+      monthly_mid: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_mid || 0), 0),
+      monthly_high: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_high || 0), 0),
+    };
 
-  return {
-    client: { name: clientName, url, industry, audit_date: new Date().toISOString().split("T")[0] },
-    scores: {
-      ai_visibility: {
-        overall: aiScores.overall,
-        geo: aiScores.geo,
-        multimodal: aiScores.multimodal,
-        agent_ready: aiScores.agentReady,
-        grade: aiScores.grade,
+    let clientName = "";
+    try { clientName = new URL(url).hostname.replace("www.", ""); } catch { clientName = url; }
+
+    return {
+      client: { name: clientName, url, industry, audit_date: new Date().toISOString().split("T")[0] },
+      scores: {
+        ai_visibility: {
+          overall: aiScores.overall,
+          geo: aiScores.geo,
+          multimodal: aiScores.multimodal,
+          agent_ready: aiScores.agentReady,
+          grade: aiScores.grade,
+        },
+        marketing_health: marketingHealth,
+        combined: { overall: combinedOverall, grade: getGrade(combinedOverall) },
       },
-      marketing_health: marketingHealth,
-      combined: { overall: combinedOverall, grade: getGrade(combinedOverall) },
-    },
-    findings: aiFindings,
-    pages_analyzed: allPages,
-    recommendations,
-    revenue_impact: revenueImpact,
-    checks,
-    metadata: {
-      scanner: "forge-scanner-mcp-app",
-      scan_duration_ms: Date.now() - startTime,
-      pages_scanned: allPages.length,
-    },
-  };
+      findings: aiFindings,
+      pages_analyzed: allPages,
+      recommendations,
+      revenue_impact: revenueImpact,
+      checks,
+      metadata: {
+        scanner: "forge-scanner-mcp-app",
+        scan_duration_ms: Date.now() - startTime,
+        pages_scanned: allPages.length,
+      },
+    };
+  } finally {
+    await releaseBrowser(browser);
+  }
 }
 
 // Helper to build scan result payload
@@ -439,8 +509,38 @@ function createServer(agencyConfig = DEFAULT_AGENCY) {
 // ── Express Server with Multi-Tenant Routing ──
 const app = express();
 
-// Raw body for Stripe webhook verification (must be before express.json)
-app.post("/api/billing/webhook", express.raw({ type: "application/json" }));
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  next();
+});
+
+// Rate limiters
+const scanLimiter = rateLimit({ windowMs: 60_000, max: 10, message: { error: "Rate limit exceeded. Max 10 scans/minute." } });
+const billingLimiter = rateLimit({ windowMs: 60_000, max: 5, message: { error: "Rate limit exceeded. Max 5 requests/minute." } });
+const globalLimiter = rateLimit({ windowMs: 60_000, max: 100, message: { error: "Rate limit exceeded." } });
+app.use(globalLimiter);
+
+// Stripe webhook must receive raw body — mount BEFORE express.json and as a complete route
+app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const signature = req.headers["stripe-signature"];
+  if (!signature) {
+    return res.status(400).json({ error: "Missing stripe-signature header" });
+  }
+
+  try {
+    const result = await handleWebhook(req.body, signature);
+    res.json(result);
+  } catch (e) {
+    console.error("Webhook error:", e.message);
+    // Always return 200 to Stripe to prevent retry storms on non-retryable errors
+    res.status(200).json({ error: e.message, received: true });
+  }
+});
 
 app.use(express.json());
 
@@ -463,10 +563,28 @@ app.get("/", (_req, res) => {
 // Session stores (keyed by transport session ID)
 const defaultSessions = new Map();
 const agencySessions = new Map();
+const MAX_SESSIONS = 1000;
+
+// Session cleanup: evict sessions idle >30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, entry] of defaultSessions) {
+    if (entry._createdAt && entry._createdAt < cutoff) {
+      try { entry.close(); } catch {}
+      defaultSessions.delete(id);
+    }
+  }
+  for (const [id, entry] of agencySessions) {
+    if (entry._createdAt && entry._createdAt < cutoff) {
+      try { entry.close(); } catch {}
+      agencySessions.delete(id);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // ── Default MCP endpoint (Ethereal Media branding) ──
 
-app.post("/mcp", async (req, res) => {
+app.post("/mcp", scanLimiter, async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
 
   if (sessionId && defaultSessions.has(sessionId)) {
@@ -484,6 +602,10 @@ app.post("/mcp", async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 
   if (transport.sessionId) {
+    if (defaultSessions.size >= MAX_SESSIONS) {
+      return res.status(503).json({ error: "Too many sessions. Try again later." });
+    }
+    transport._createdAt = Date.now();
     defaultSessions.set(transport.sessionId, transport);
     transport.onclose = () => defaultSessions.delete(transport.sessionId);
   }
@@ -511,7 +633,7 @@ app.delete("/mcp", async (req, res) => {
 
 // ── Agency MCP endpoint: /a/:slug/mcp ──
 
-app.post("/a/:slug/mcp", agencyAuth(), async (req, res) => {
+app.post("/a/:slug/mcp", scanLimiter, agencyAuth(), async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   const agency = req.agency;
   const sessionKey = `${agency.slug}:${sessionId}`;
@@ -532,6 +654,10 @@ app.post("/a/:slug/mcp", agencyAuth(), async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 
   if (transport.sessionId) {
+    if (agencySessions.size >= MAX_SESSIONS) {
+      return res.status(503).json({ error: "Too many sessions. Try again later." });
+    }
+    transport._createdAt = Date.now();
     const key = `${agency.slug}:${transport.sessionId}`;
     agencySessions.set(key, transport);
     transport.onclose = () => agencySessions.delete(key);
@@ -568,7 +694,8 @@ app.delete("/a/:slug/mcp", agencyAuth(), async (req, res) => {
 
 app.get("/api/agencies/:slug/usage", async (req, res) => {
   const adminKey = req.headers["x-admin-key"];
-  if (adminKey !== process.env.ADMIN_API_KEY) {
+  const expected = process.env.ADMIN_API_KEY;
+  if (!expected || !adminKey || !secureKeyCompare(adminKey, expected)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -607,7 +734,8 @@ app.get("/api/agencies/:slug/usage", async (req, res) => {
 // One-time setup: create Stripe products + prices
 app.post("/api/billing/setup", async (req, res) => {
   const adminKey = req.headers["x-admin-key"];
-  if (adminKey !== process.env.ADMIN_API_KEY) {
+  const expected = process.env.ADMIN_API_KEY;
+  if (!expected || !adminKey || !secureKeyCompare(adminKey, expected)) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -620,7 +748,7 @@ app.post("/api/billing/setup", async (req, res) => {
 });
 
 // Create checkout session (public — generates Stripe payment link)
-app.post("/api/billing/checkout", async (req, res) => {
+app.post("/api/billing/checkout", billingLimiter, async (req, res) => {
   const { tier, agency_name, email, slug, success_url, cancel_url } = req.body;
 
   if (!tier || !agency_name || !email) {
@@ -649,21 +777,7 @@ app.post("/api/billing/checkout", async (req, res) => {
   }
 });
 
-// Stripe webhook (raw body — parsed above before express.json)
-app.post("/api/billing/webhook", async (req, res) => {
-  const signature = req.headers["stripe-signature"];
-  if (!signature) {
-    return res.status(400).json({ error: "Missing stripe-signature header" });
-  }
-
-  try {
-    const result = await handleWebhook(req.body, signature);
-    res.json(result);
-  } catch (e) {
-    console.error("Webhook error:", e.message);
-    res.status(400).json({ error: e.message });
-  }
-});
+// Note: Stripe webhook route is mounted above express.json() to receive raw body
 
 // Customer portal (agency authenticates with their API key)
 app.post("/api/billing/portal", async (req, res) => {
@@ -748,7 +862,7 @@ app.get("/api/billing/plans", (_req, res) => {
 
 // Checkout success page
 app.get("/billing/success", async (req, res) => {
-  const sessionId = req.query.session_id;
+  const sessionId = escapeHtml(req.query.session_id || "N/A");
   res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Subscription Active</title>
 <style>body{font-family:-apple-system,sans-serif;max-width:600px;margin:60px auto;text-align:center;color:#1a1a1a}
@@ -758,7 +872,7 @@ h1{color:#6366f1}.check{font-size:64px;margin:20px}code{background:#f1f1f5;paddi
 <h1>You're all set!</h1>
 <p>Your AI Visibility Scanner subscription is active.</p>
 <p>Check your email for your API key and MCP endpoint URL.</p>
-<p style="color:#666;margin-top:32px">Session: <code>${sessionId || "N/A"}</code></p>
+<p style="color:#666;margin-top:32px">Session: <code>${sessionId}</code></p>
 </body></html>`);
 });
 
@@ -776,9 +890,38 @@ h1{color:#ef4444}</style></head>
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`AI Visibility Scanner MCP App running on :${PORT}`);
   console.log(`Default MCP: http://localhost:${PORT}/mcp`);
-  console.log(`Agency MCP:  http://localhost:${PORT}/a/:slug/mcp?key=xxx`);
+  console.log(`Agency MCP:  http://localhost:${PORT}/a/:slug/mcp`);
   console.log(`Billing:     http://localhost:${PORT}/api/billing/plans`);
 });
+
+// Health check endpoint
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    uptime: Math.round(process.uptime()),
+    sessions: defaultSessions.size + agencySessions.size,
+    memory_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+  });
+});
+
+// Graceful shutdown
+function shutdown(signal) {
+  console.log(`${signal} received. Shutting down gracefully...`);
+  httpServer.close(async () => {
+    console.log("HTTP server closed");
+    // Close all MCP sessions
+    for (const t of defaultSessions.values()) { try { await t.close(); } catch {} }
+    for (const t of agencySessions.values()) { try { await t.close(); } catch {} }
+    // Close Puppeteer browser
+    await closeBrowser();
+    console.log("Cleanup complete");
+    process.exit(0);
+  });
+  // Force kill after 10s
+  setTimeout(() => { console.error("Forced shutdown after 10s timeout"); process.exit(1); }, 10_000);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

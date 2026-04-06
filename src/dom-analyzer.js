@@ -2,21 +2,32 @@ const puppeteer = require('puppeteer');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Shared browser instance for scanning multiple pages
-let _browser = null;
+// Browser pool: each scan gets its own browser instance to prevent race conditions.
+// Active browsers tracked by a ref-counted pool for cleanup.
+const _activeBrowsers = new Set();
 
-async function getBrowser() {
-  if (!_browser) {
-    _browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-  }
-  return _browser;
+async function createBrowser() {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
+  _activeBrowsers.add(browser);
+  return browser;
 }
 
-async function closeBrowser() {
-  if (_browser) {
-    await _browser.close();
-    _browser = null;
+async function releaseBrowser(browser) {
+  if (browser) {
+    _activeBrowsers.delete(browser);
+    try { await browser.close(); } catch {}
   }
+}
+
+// Close all browsers (used during graceful shutdown)
+async function closeBrowser() {
+  for (const b of _activeBrowsers) {
+    try { await b.close(); } catch {}
+  }
+  _activeBrowsers.clear();
 }
 
 /**
@@ -27,7 +38,11 @@ async function closeBrowser() {
  * @param {string} pageType - "homepage" or "subpage"
  * @param {boolean} extractSignals - If true, extract schema/meta/media/aeo signals (homepage only)
  */
-async function analyzePage(url, pageType = 'homepage', extractSignals = true) {
+async function analyzePage(url, pageType = 'homepage', extractSignals = true, browser = null) {
+  // If no browser provided, create one (caller should manage lifecycle for batches)
+  const ownsBrowser = !browser;
+  if (!browser) browser = await createBrowser();
+
   // 1. Raw HTML Fetch (No JS — what crawlers/LLMs see)
   const noJsStart = Date.now();
   let rawHtml = '';
@@ -47,7 +62,6 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true) {
   const $raw = cheerio.load(rawHtml);
 
   // 2. Puppeteer Fetch (JS Rendered — what users see)
-  const browser = await getBrowser();
   const page = await browser.newPage();
   await page.setUserAgent('Mozilla/5.0 (compatible; ForgeScanner/2.0; Puppeteer)');
 
@@ -98,6 +112,9 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true) {
       } catch (e) {}
     });
   }
+
+  // If we created the browser ourselves, release it
+  if (ownsBrowser) await releaseBrowser(browser);
 
   return {
     url,
@@ -431,4 +448,4 @@ function discoverSubpages(internalLinks, maxPages = 5) {
   return found;
 }
 
-module.exports = { analyzePage, closeBrowser, discoverSubpages };
+module.exports = { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages };
