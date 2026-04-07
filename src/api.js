@@ -577,6 +577,32 @@ async function runScanAsync(scanId, scanRecord, performScan) {
     }
 
     console.log(`Scan ${scanId} complete: ${results.scores.combined.grade} (${results.scores.combined.overall}/100) in ${results.metadata.scan_duration_ms}ms`);
+
+    // Capture lead if email was provided (feeds into nurture sequence)
+    if (scanRecord.email && SUPABASE_URL && SUPABASE_KEY) {
+      try {
+        // Check if lead already exists
+        const checkResp = await fetch(
+          `${SUPABASE_URL}/rest/v1/leads?email=eq.${encodeURIComponent(scanRecord.email)}&select=id&limit=1`,
+          { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+        );
+        const existing = await checkResp.json();
+
+        if (!existing || existing.length === 0) {
+          await supabaseInsert("leads", {
+            email: scanRecord.email,
+            website_url: scanRecord.url,
+            source: "scan_form",
+            status: "new",
+            lead_score: 10,
+            notes: `${scanRecord.tier} scan — grade ${results.scores.combined.grade} (${results.scores.combined.overall}/100)`,
+          });
+          console.log(`Lead captured from scan: ${scanRecord.email}`);
+        }
+      } catch (e) {
+        console.error(`Lead capture failed for ${scanRecord.email}:`, e.message);
+      }
+    }
   } catch (e) {
     console.error(`Scan ${scanId} failed:`, e.message);
 
