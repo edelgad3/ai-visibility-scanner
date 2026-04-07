@@ -200,12 +200,20 @@ async function handleWebhook(rawBody, signature) {
   return { received: true, type: event.type };
 }
 
-// ── Checkout completed → provision agency ──
+// ── Checkout completed → route by type ──
 async function onCheckoutCompleted(session) {
-  const { agency_name, agency_slug, tier } = session.metadata;
+  const { agency_name, agency_slug, tier, scan_type } = session.metadata;
+  const email = session.customer_email || session.customer_details?.email;
+
+  // Route: one-time scan purchase
+  if (scan_type === "one_time") {
+    await onScanPurchaseCompleted(session, email, tier);
+    return;
+  }
+
+  // Route: agency subscription
   const customerId = session.customer;
   const subscriptionId = session.subscription;
-  const email = session.customer_email || session.customer_details?.email;
 
   if (!agency_slug || !tier) {
     console.error("Checkout session missing metadata:", session.id);
@@ -285,6 +293,210 @@ async function onCheckoutCompleted(session) {
     );
   } catch (e) {
     console.error("Agency provisioning error:", e.message);
+  }
+}
+
+// ── One-time scan purchase → create account + unlock report ──
+async function onScanPurchaseCompleted(session, email, tier) {
+  if (!email) {
+    console.error("Scan purchase missing email:", session.id);
+    return;
+  }
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error("Supabase not configured — cannot process scan purchase");
+    return;
+  }
+
+  const stripeSessionId = session.id;
+  const amountPaid = session.amount_total;
+
+  console.log(`Scan purchase: ${email} bought ${tier} tier ($${(amountPaid / 100).toFixed(2)})`);
+
+  try {
+    // 1. Update scan_payments record
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/scan_payments?stripe_session_id=eq.${encodeURIComponent(stripeSessionId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ status: "paid", paid_at: new Date().toISOString() }),
+      }
+    ).catch(() => {});
+
+    // 2. Upgrade any pending/completed scans for this email to the paid tier
+    const scansResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/scans?lead_email=eq.${encodeURIComponent(email)}&select=id,tier,status&order=created_at.desc&limit=5`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    const scans = await scansResp.json();
+
+    if (scans && scans.length > 0) {
+      // Upgrade the most recent scan to the paid tier
+      const latestScan = scans[0];
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/scans?id=eq.${latestScan.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${SUPABASE_KEY}`,
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify({
+            tier,
+            paid: true,
+            amount_cents: amountPaid,
+            stripe_session_id: stripeSessionId,
+          }),
+        }
+      );
+      console.log(`Scan ${latestScan.id} upgraded to ${tier}`);
+    }
+
+    // 3. Create Supabase Auth account (invite via magic link)
+    const authResp = await fetch(
+      `${SUPABASE_URL}/auth/v1/admin/generate_link`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({
+          type: "magiclink",
+          email,
+          options: {
+            data: { source: "scan_purchase", tier, stripe_session_id: stripeSessionId },
+            redirectTo: "https://etherealmedia.ai/dashboard/",
+          },
+        }),
+      }
+    );
+
+    if (authResp.ok) {
+      const authData = await authResp.json();
+      const magicLink = authData.properties?.action_link;
+
+      // 4. Send report delivery email with magic link
+      await sendScanReportEmail({ email, tier, magicLink, amountPaid });
+      console.log(`Account created + magic link sent to ${email}`);
+    } else {
+      // User may already exist — still send report email without magic link
+      console.log(`Auth link generation failed (user may exist): ${await authResp.text()}`);
+      await sendScanReportEmail({ email, tier, magicLink: null, amountPaid });
+    }
+
+    // 5. Update lead status
+    await fetch(
+      `${SUPABASE_URL}/rest/v1/leads?email=eq.${encodeURIComponent(email)}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ status: "customer", tier }),
+      }
+    ).catch(() => {});
+
+    // 6. Slack notification
+    await notifySlack(
+      `Scan purchase! *${email}* bought ${tier} tier ($${(amountPaid / 100).toFixed(2)})`
+    );
+  } catch (e) {
+    console.error("Scan purchase processing error:", e.message);
+  }
+}
+
+// ── Send scan report delivery email ──
+async function sendScanReportEmail({ email, tier, magicLink, amountPaid }) {
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey) {
+    console.log("RESEND_API_KEY not set — skipping report email");
+    return;
+  }
+
+  const tierNames = { forge: "Forge Report", diagnostic: "Full Diagnostic" };
+  const tierName = tierNames[tier] || tier;
+  const dashboardUrl = magicLink || "https://etherealmedia.ai/dashboard/";
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #1a1a1a;">
+  <div style="text-align: center; margin-bottom: 32px;">
+    <h1 style="color: #2494A3; margin: 0;">Ethereal Media</h1>
+    <p style="color: #666; margin: 4px 0 0;">The Ethereal Forge</p>
+  </div>
+
+  <h2>Your ${tierName} is ready!</h2>
+  <p>Thank you for your purchase ($${(amountPaid / 100).toFixed(2)}). Your full AI visibility report is now available in your dashboard.</p>
+
+  <div style="text-align: center; margin: 32px 0;">
+    <a href="${dashboardUrl}" style="display: inline-block; background: #2494A3; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 100px; font-weight: 600; font-size: 16px;">View Your Report &rarr;</a>
+  </div>
+
+  <h3>What's included in your ${tierName}:</h3>
+  <ul style="line-height: 1.8; color: #444;">
+    ${tier === "diagnostic" ? `
+    <li>Complete AI visibility grade + GEO score</li>
+    <li>All P0/P1/P2 findings with action items</li>
+    <li>WebMCP + agent protocol audit</li>
+    <li>Marketing health analysis (6 dimensions)</li>
+    <li>Competitive visibility comparison</li>
+    <li>Revenue impact estimates</li>
+    <li>Implementation roadmap</li>
+    <li>Human strategist review + 30-min debrief</li>
+    ` : `
+    <li>Complete AI visibility grade + GEO score</li>
+    <li>All P0/P1/P2 findings with action items</li>
+    <li>Competitive visibility comparison</li>
+    <li>Revenue impact estimates</li>
+    <li>Prioritized implementation roadmap</li>
+    `}
+  </ul>
+
+  <p style="margin-top: 24px;">Ready to get your site fixed? Reply to this email or <a href="https://etherealmedia.ai/#contact" style="color: #2494A3;">book a consultation</a> — we'll handle the implementation.</p>
+
+  <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; text-align: center; color: #999; font-size: 13px;">
+    <p>Ethereal Media &mdash; The Ethereal Forge</p>
+    <p><a href="mailto:info@etherealmedia.ai" style="color: #2494A3;">info@etherealmedia.ai</a></p>
+  </div>
+</body>
+</html>`;
+
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM_EMAIL || "Ethereal Media <info@etherealmedia.ai>",
+        to: [email],
+        subject: `Your ${tierName} is ready — view your AI visibility report`,
+        html,
+      }),
+    });
+
+    if (!resp.ok) {
+      console.error("Report email failed:", await resp.text());
+    } else {
+      console.log(`Report email sent to ${email}`);
+    }
+  } catch (e) {
+    console.error("Report email error:", e.message);
   }
 }
 

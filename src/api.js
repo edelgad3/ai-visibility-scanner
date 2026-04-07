@@ -374,6 +374,7 @@ POST /api/v1/scan
       tier,
       status: "queued",
       email: email || null,
+      lead_email: email || null,
       max_pages: max_pages || tierConfig.max_pages,
       industry: industry || "general",
       paid: !isPaid || !!stripeSessionId,
