@@ -991,6 +991,46 @@ const httpServer = app.listen(PORT, () => {
   console.log(`Billing:     http://localhost:${PORT}/api/billing/plans`);
 });
 
+// ── Unsubscribe endpoint (CAN-SPAM compliance) ──
+app.get("/unsubscribe", async (req, res) => {
+  const email = (req.query.email || "").trim().toLowerCase();
+
+  const page = (title, message, success) => `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} — Ethereal Media</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#e5e5e5;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;max-width:480px;width:100%;padding:48px 40px;text-align:center}
+.icon{width:56px;height:56px;border-radius:50%;background:${success ? "#22c55e22" : "#ef444422"};color:${success ? "#22c55e" : "#ef4444"};font-size:24px;display:flex;align-items:center;justify-content:center;margin:0 auto 24px}
+h1{font-size:22px;font-weight:600;margin-bottom:12px;color:#fff}p{font-size:15px;line-height:1.6;color:#aaa}.brand{margin-top:40px;font-size:12px;color:#555}</style></head>
+<body><div class="card"><div class="icon">${success ? "✓" : "✕"}</div><h1>${title}</h1><p>${message}</p><div class="brand">Ethereal Media — EtherealMedia.ai</div></div></body></html>`;
+
+  if (!email) {
+    return res.status(400).send(page("Invalid Request", "No email address provided. Please use the unsubscribe link from your email.", false));
+  }
+
+  try {
+    // Update lead status in Supabase
+    const resp = await fetch(`${process.env.SUPABASE_URL}/rest/v1/leads?email=eq.${encodeURIComponent(email)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY}`,
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() }),
+    });
+
+    if (!resp.ok) console.error(`Unsubscribe DB update failed for ${email}: ${await resp.text()}`);
+    else console.log(`Unsubscribed: ${email}`);
+
+    res.send(page("You've Been Unsubscribed", `<strong>${email}</strong> has been removed from our mailing list. You won't receive any further emails.`, true));
+  } catch (e) {
+    console.error(`Unsubscribe error for ${email}:`, e.message);
+    res.status(500).send(page("Something Went Wrong", "We encountered an error. Please try again or contact us directly.", false));
+  }
+});
+
 // Health check endpoint
 app.get("/health", (_req, res) => {
   res.json({
