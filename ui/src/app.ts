@@ -7,7 +7,7 @@ let currentUrl = "";
 let activePriority = "p0";
 let scanData: any = null;
 let scanMeta: any = null;
-let selectedTier = "full_audit";
+let selectedTier = "forge";
 let activeDrilldown = "";
 let progressTimer: any = null;
 
@@ -205,9 +205,13 @@ function openCommerceModal(findingAction: string) {
   hide("lead-success");
   show("lead-form");
   show("commerce-modal");
-  selectedTier = "full_audit";
+
+  // Pre-select tier from URL param (?tier=forge or ?tier=diagnostic), default to forge
+  const urlTier = new URLSearchParams(window.location.search).get("tier");
+  const validTiers = ["visibility", "forge", "diagnostic"];
+  selectedTier = validTiers.includes(urlTier || "") ? urlTier! : "forge";
   document.querySelectorAll(".tier-card").forEach((c) => c.classList.remove("selected"));
-  document.querySelector('.tier-card[data-tier="full_audit"]')?.classList.add("selected");
+  document.querySelector(`.tier-card[data-tier="${selectedTier}"]`)?.classList.add("selected");
 }
 
 function closeCommerceModal() {
@@ -450,24 +454,46 @@ function bindEvents() {
     e.preventDefault();
     const form = e.target as HTMLFormElement;
     const data = new FormData(form);
+    const email = data.get("email") as string;
+    const name = data.get("name") as string;
+    const company = (data.get("company") as string) || "";
+
+    // Submit lead to backend
     try {
       await app.callServerTool({
         name: "submit_lead",
         arguments: {
-          name: data.get("name") as string,
-          email: data.get("email") as string,
-          company: (data.get("company") as string) || "",
+          name,
+          email,
+          company,
           tier: selectedTier,
           scan_url: currentUrl,
           findings_count: (scanData?.findings_summary?.p0 || 0) + (scanData?.findings_summary?.p1 || 0),
         },
       });
     } catch { /* submission failed but show success anyway for UX */ }
+
+    // For paid tiers, redirect to Stripe checkout
+    if (selectedTier === "forge" || selectedTier === "diagnostic") {
+      try {
+        const resp = await fetch("/api/v1/scan/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tier: selectedTier, email }),
+        });
+        const result = await resp.json();
+        if (result.checkout_url) {
+          window.location.href = result.checkout_url;
+          return;
+        }
+      } catch { /* checkout failed — fall through to success message */ }
+    }
+
     hide("lead-form");
     show("lead-success");
 
     // Notify the AI
-    const tierLabels: Record<string, string> = { quick_fix: "Quick Fix ($99)", full_audit: "Full Audit Fix ($299)", agent_access: "Agent Access ($4,999)" };
+    const tierLabels: Record<string, string> = { visibility: "Visibility Scan (Free)", forge: "Forge Scan ($299)", diagnostic: "Full Diagnostic ($499)" };
     app.updateModelContext({ content: [{ type: "text", text: `User submitted a lead for ${currentUrl}. Tier: ${tierLabels[selectedTier]}. Name: ${data.get("name")}. Email: ${data.get("email")}.` }] });
   });
 }

@@ -465,7 +465,7 @@ function createServer(agencyConfig = DEFAULT_AGENCY) {
         name: z.string(),
         email: z.string(),
         company: z.string().optional(),
-        tier: z.enum(["quick_fix", "full_audit", "agent_access"]),
+        tier: z.enum(["visibility", "forge", "diagnostic"]),
         scan_url: z.string().url(),
         findings_count: z.number().optional(),
       },
@@ -978,6 +978,57 @@ app.get("/api/billing/plans", (_req, res) => {
   res.json({ plans });
 });
 
+// ── Onboarding wizard ──
+let ONBOARDING_HTML;
+try {
+  ONBOARDING_HTML = readFileSync(path.join(__dirname, "ui/onboarding.html"), "utf-8");
+} catch {
+  ONBOARDING_HTML = "<html><body><p>Onboarding page not found.</p></body></html>";
+}
+
+app.get("/onboarding", (_req, res) => {
+  res.type("html").send(ONBOARDING_HTML);
+});
+
+// Mark onboarding complete (called by wizard step 3)
+app.post("/api/v1/agency/onboarding/complete", async (req, res) => {
+  const apiKey = req.headers["x-api-key"];
+  if (!apiKey) return res.status(401).json({ error: "API key required" });
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseUrl || !supabaseKey) return res.status(503).json({ error: "Database not configured" });
+
+  try {
+    // Look up agency
+    const lookupResp = await fetch(
+      `${supabaseUrl}/rest/v1/agencies?api_key=eq.${encodeURIComponent(apiKey)}&active=eq.true&select=id&limit=1`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    const rows = await lookupResp.json();
+    if (!rows?.[0]) return res.status(404).json({ error: "Agency not found" });
+
+    // Set onboarding_completed = true
+    await fetch(
+      `${supabaseUrl}/rest/v1/agencies?id=eq.${rows[0].id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ onboarding_completed: true }),
+      }
+    );
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Checkout success page
 app.get("/billing/success", async (req, res) => {
   const sessionId = escapeHtml(req.query.session_id || "N/A");
@@ -989,7 +1040,9 @@ h1{color:#6366f1}.check{font-size:64px;margin:20px}code{background:#f1f1f5;paddi
 <div class="check">&#10003;</div>
 <h1>You're all set!</h1>
 <p>Your AI Visibility Scanner subscription is active.</p>
-<p>Check your email for your API key and MCP endpoint URL.</p>
+<p>Check your email for your API key and setup instructions.</p>
+<p style="margin-top:24px"><a href="/onboarding" style="display:inline-block;background:#2494A3;color:#fff;padding:12px 28px;border-radius:100px;text-decoration:none;font-weight:600">Start Setup &rarr;</a></p>
+<p style="color:#999;margin-top:8px;font-size:13px">Check your email for your API key, then click above to begin.</p>
 <p style="color:#666;margin-top:32px">Session: <code>${sessionId}</code></p>
 </body></html>`);
 });
@@ -1003,7 +1056,7 @@ h1{color:#ef4444}</style></head>
 <body>
 <h1>Checkout Canceled</h1>
 <p>No charges were made. You can try again anytime.</p>
-<p><a href="/" style="color:#6366f1">Back to home</a></p>
+<p><a href="https://etherealmedia.ai/pricing" style="color:#2494A3">View pricing</a> &middot; <a href="https://etherealmedia.ai/scan" style="color:#2494A3">Run a free scan</a></p>
 </body></html>`);
 });
 

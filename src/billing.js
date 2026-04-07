@@ -126,8 +126,8 @@ async function createCheckoutSession({ tier, agencyName, email, slug, successUrl
         tier,
       },
     },
-    success_url: successUrl || `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: cancelUrl || `${baseUrl}/billing/cancel`,
+    success_url: successUrl || `https://app.etherealmedia.ai/dashboard/?checkout=success`,
+    cancel_url: cancelUrl || `https://etherealmedia.ai/pricing/`,
     allow_promotion_codes: true,
   });
 
@@ -291,6 +291,79 @@ async function onCheckoutCompleted(session) {
     const agency = Array.isArray(result) ? result[0] : result;
     console.log(`Agency provisioned: ${agency_slug} (${tier}) — API key: ${agency.api_key?.slice(0, 8)}...`);
 
+    // Create Supabase Auth user + link to agency
+    try {
+      const authResp = await fetch(
+        `${SUPABASE_URL}/auth/v1/admin/generate_link`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${SUPABASE_KEY}`,
+          },
+          body: JSON.stringify({
+            type: "magiclink",
+            email,
+            options: {
+              data: { source: "agency_subscription", tier, agency_slug },
+              redirectTo: "https://app.etherealmedia.ai/api/auth/callback?redirect=/onboarding",
+            },
+          }),
+        }
+      );
+
+      if (authResp.ok) {
+        const authData = await authResp.json();
+        const authUserId = authData.id || authData.user?.id;
+        if (authUserId && agency.id) {
+          await fetch(
+            `${SUPABASE_URL}/rest/v1/agencies?id=eq.${agency.id}`,
+            {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/json",
+                apikey: SUPABASE_KEY,
+                Authorization: `Bearer ${SUPABASE_KEY}`,
+                Prefer: "return=minimal",
+              },
+              body: JSON.stringify({ auth_user_id: authUserId }),
+            }
+          );
+          console.log(`Auth user ${authUserId} linked to agency ${agency_slug}`);
+        }
+      } else {
+        console.log(`Auth link for agency failed (user may exist): ${await authResp.text()}`);
+        // Try to find existing user and link
+        const usersResp = await fetch(
+          `${SUPABASE_URL}/auth/v1/admin/users?filter=${encodeURIComponent(email)}`,
+          { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+        );
+        if (usersResp.ok) {
+          const usersData = await usersResp.json();
+          const existingUser = (usersData.users || []).find((u) => u.email === email);
+          if (existingUser?.id && agency.id) {
+            await fetch(
+              `${SUPABASE_URL}/rest/v1/agencies?id=eq.${agency.id}`,
+              {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                  apikey: SUPABASE_KEY,
+                  Authorization: `Bearer ${SUPABASE_KEY}`,
+                  Prefer: "return=minimal",
+                },
+                body: JSON.stringify({ auth_user_id: existingUser.id }),
+              }
+            );
+            console.log(`Existing auth user ${existingUser.id} linked to agency ${agency_slug}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Auth user creation/linking error:", e.message);
+    }
+
     // Send onboarding email
     await sendOnboardingEmail({
       email,
@@ -389,7 +462,7 @@ async function onScanPurchaseCompleted(session, email, tier) {
           email,
           options: {
             data: { source: "scan_purchase", tier, stripe_session_id: stripeSessionId },
-            redirectTo: "https://etherealmedia.ai/dashboard/",
+            redirectTo: "https://app.etherealmedia.ai/api/auth/callback?redirect=/portal",
           },
         }),
       }
@@ -442,7 +515,7 @@ async function sendScanReportEmail({ email, tier, magicLink, amountPaid }) {
 
   const tierNames = { forge: "Forge Report", diagnostic: "Full Diagnostic" };
   const tierName = tierNames[tier] || tier;
-  const dashboardUrl = magicLink || "https://etherealmedia.ai/dashboard/";
+  const dashboardUrl = magicLink || "https://app.etherealmedia.ai/portal";
 
   const html = `
 <!DOCTYPE html>
@@ -715,6 +788,10 @@ async function sendOnboardingEmail({ email, agencyName, slug, apiKey, tier, scan
   </table>
 
   <h3>Quick Start</h3>
+  <div style="text-align: center; margin: 24px 0;">
+    <a href="${baseUrl}/onboarding?key=${apiKey}" style="display: inline-block; background: #6366f1; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 100px; font-weight: 600; font-size: 16px;">Launch Setup Wizard &rarr;</a>
+  </div>
+  <p style="font-size: 13px; color: #666; text-align: center;">Or follow the manual steps below:</p>
   <ol style="line-height: 1.8;">
     <li>Add the MCP endpoint URL to your AI client (Claude, ChatGPT, etc.)</li>
     <li>Ask: <em>"Scan example.com for AI visibility"</em></li>

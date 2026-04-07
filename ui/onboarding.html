@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome — AI Visibility Scanner</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --surface: #111; --border: rgba(164,234,240,0.12);
+      --text: #e0e0e0; --muted: #888; --accent: #2494A3; --accent-glow: rgba(36,148,163,0.2);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .wizard { max-width: 560px; width: 100%; padding: 40px 32px; }
+    .logo { text-align: center; margin-bottom: 32px; font-family: monospace; font-size: 14px; letter-spacing: 0.12em; color: #A3EAF0; }
+    .logo strong { color: #fff; }
+
+    /* Steps indicator */
+    .steps { display: flex; gap: 8px; margin-bottom: 32px; }
+    .step-dot { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.08); transition: background 0.3s; }
+    .step-dot.active { background: var(--accent); }
+    .step-dot.done { background: #2ea86e; }
+
+    h2 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 28px; line-height: 1.5; }
+
+    /* Form fields */
+    .field { margin-bottom: 20px; }
+    .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .field input { width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; outline: none; transition: border 0.2s; }
+    .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .field input::placeholder { color: #555; }
+    .field .hint { font-size: 12px; color: #555; margin-top: 4px; }
+
+    /* Color picker row */
+    .color-row { display: flex; gap: 12px; align-items: center; }
+    .color-row input[type="color"] { width: 48px; height: 40px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); cursor: pointer; padding: 2px; }
+    .color-row input[type="text"] { flex: 1; }
+
+    /* Buttons */
+    .actions { display: flex; gap: 12px; margin-top: 32px; }
+    .btn { padding: 12px 24px; border-radius: 100px; font-size: 15px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+    .btn-primary { background: var(--accent); color: #0a0a0a; flex: 1; }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-secondary { background: transparent; color: var(--muted); border: 1px solid rgba(255,255,255,0.1); }
+    .btn-secondary:hover { border-color: rgba(255,255,255,0.2); color: var(--text); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Step panels */
+    .step-panel { display: none; }
+    .step-panel.active { display: block; }
+
+    /* Copy box */
+    .copy-box { background: #1a1a2e; border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+    .copy-box code { flex: 1; font-size: 13px; color: #a5f3fc; word-break: break-all; }
+    .copy-box button { background: var(--accent); color: #0a0a0a; border: none; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    /* Scan demo */
+    .scan-demo { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 16px 0; text-align: center; }
+    .scan-demo .score { font-size: 48px; font-weight: 700; color: var(--accent); }
+    .scan-demo .grade { font-size: 18px; color: var(--muted); margin-top: 4px; }
+    .scan-status { font-size: 13px; color: var(--muted); margin-top: 8px; }
+
+    /* Success */
+    .success-panel { text-align: center; padding: 40px 0; }
+    .success-icon { font-size: 48px; margin-bottom: 16px; }
+    .success-panel h2 { margin-bottom: 12px; }
+    .success-links { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+    .success-links a { color: var(--accent); text-decoration: none; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wizard">
+    <div class="logo"><strong>ETHEREAL</strong> <span style="opacity:0.6">MEDIA</span></div>
+
+    <div class="steps">
+      <div class="step-dot active" data-step="0"></div>
+      <div class="step-dot" data-step="1"></div>
+      <div class="step-dot" data-step="2"></div>
+    </div>
+
+    <!-- Step 1: Brand Setup -->
+    <div class="step-panel active" id="step-0">
+      <h2>Set up your brand</h2>
+      <p class="subtitle">Customize how your scanner looks to clients. You can change these anytime.</p>
+
+      <div class="field">
+        <label>Brand Name</label>
+        <input type="text" id="brand-name" placeholder="Your Agency Name" />
+      </div>
+      <div class="field">
+        <label>Logo URL</label>
+        <input type="url" id="logo-url" placeholder="https://youragency.com/logo.png" />
+        <div class="hint">Optional — PNG or SVG recommended</div>
+      </div>
+      <div class="field">
+        <label>Accent Color</label>
+        <div class="color-row">
+          <input type="color" id="accent-picker" value="#2494A3" />
+          <input type="text" id="accent-hex" value="#2494A3" placeholder="#2494A3" />
+        </div>
+      </div>
+      <div class="field">
+        <label>CTA Button Text</label>
+        <input type="text" id="cta-text" placeholder="Get Your Free Scan" value="Get Your Free Scan" />
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-secondary" onclick="skipStep()">Skip for now</button>
+        <button class="btn btn-primary" onclick="saveBranding()">Save & Continue</button>
+      </div>
+    </div>
+
+    <!-- Step 2: First Scan -->
+    <div class="step-panel" id="step-1">
+      <h2>Run your first scan</h2>
+      <p class="subtitle">Test the scanner with any website. This is what your clients will see.</p>
+
+      <div class="field">
+        <label>Website URL</label>
+        <input type="url" id="scan-url" placeholder="https://example.com" />
+      </div>
+
+      <button class="btn btn-primary" id="btn-scan" onclick="runFirstScan()" style="width:100%">Scan Now</button>
+
+      <div class="scan-demo" id="scan-result" style="display:none">
+        <div class="score" id="demo-score">--</div>
+        <div class="grade" id="demo-grade">Scanning...</div>
+        <div class="scan-status" id="demo-status"></div>
+      </div>
+
+      <div class="actions" style="margin-top:24px">
+        <button class="btn btn-secondary" onclick="skipStep()">Skip</button>
+        <button class="btn btn-primary" onclick="goToStep(2)">Continue</button>
+      </div>
+    </div>
+
+    <!-- Step 3: Connect -->
+    <div class="step-panel" id="step-2">
+      <h2>Connect your tools</h2>
+      <p class="subtitle">Add the MCP endpoint to any AI client — Claude, ChatGPT, or your own integration.</p>
+
+      <div class="field">
+        <label>Your MCP Endpoint</label>
+        <div class="copy-box">
+          <code id="mcp-url">Loading...</code>
+          <button onclick="copyText('mcp-url')">Copy</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>API Key</label>
+        <div class="copy-box">
+          <code id="api-key-display">Loading...</code>
+          <button onclick="copyText('api-key-display')">Copy</button>
+        </div>
+        <div class="hint">Keep this secret — use it in the X-API-Key header or ?key= parameter</div>
+      </div>
+
+      <div class="field">
+        <label>Lead Webhook URL (optional)</label>
+        <input type="url" id="webhook-url" placeholder="https://yourcrm.com/webhook" />
+        <div class="hint">We'll POST lead data here when someone submits the scan form</div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary" onclick="completeOnboarding()" style="flex:1">Finish Setup</button>
+      </div>
+    </div>
+
+    <!-- Success -->
+    <div class="step-panel" id="step-done">
+      <div class="success-panel">
+        <div class="success-icon">&#x2705;</div>
+        <h2>You're all set!</h2>
+        <p class="subtitle">Your white-label scanner is live. Here's what to do next.</p>
+        <div class="success-links">
+          <a href="#" id="link-dashboard">Open your agency dashboard &rarr;</a>
+          <a href="https://etherealmedia.ai/docs/scanner" target="_blank">Read the integration guide &rarr;</a>
+          <a href="mailto:support@etherealmedia.ai">Need help? Email us &rarr;</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let currentStep = 0;
+    let apiKey = new URLSearchParams(window.location.search).get("key") || "";
+    let agencyData = null;
+    const BASE = window.location.origin;
+
+    // Init: fetch agency data
+    (async function init() {
+      if (!apiKey) {
+        document.querySelector(".wizard").innerHTML = '<h2 style="text-align:center;color:#e0e0e0;">Missing API key</h2><p style="text-align:center;color:#888;">Check your onboarding email for the correct link.</p>';
+        return;
+      }
+      try {
+        const resp = await fetch(`${BASE}/api/v1/agency/me`, { headers: { "X-API-Key": apiKey } });
+        if (!resp.ok) throw new Error("Auth failed");
+        agencyData = await resp.json();
+
+        // Pre-fill brand fields
+        if (agencyData.branding?.brand_name) document.getElementById("brand-name").value = agencyData.branding.brand_name;
+        if (agencyData.branding?.logo_url) document.getElementById("logo-url").value = agencyData.branding.logo_url;
+        if (agencyData.branding?.accent_color) {
+          document.getElementById("accent-picker").value = agencyData.branding.accent_color;
+          document.getElementById("accent-hex").value = agencyData.branding.accent_color;
+        }
+        if (agencyData.branding?.cta_text) document.getElementById("cta-text").value = agencyData.branding.cta_text;
+
+        // Fill MCP + API key on step 3
+        document.getElementById("mcp-url").textContent = `${BASE}${agencyData.mcp_endpoint}?key=${apiKey}`;
+        document.getElementById("api-key-display").textContent = apiKey;
+        document.getElementById("link-dashboard").href = `${BASE}/a/${agencyData.slug}/dashboard?key=${apiKey}`;
+      } catch (e) {
+        document.querySelector(".wizard").innerHTML = '<h2 style="text-align:center;color:#e0e0e0;">Authentication failed</h2><p style="text-align:center;color:#888;">Your API key may be invalid or expired.</p>';
+      }
+    })();
+
+    // Color picker sync
+    document.getElementById("accent-picker").addEventListener("input", (e) => {
+      document.getElementById("accent-hex").value = e.target.value;
+    });
+    document.getElementById("accent-hex").addEventListener("input", (e) => {
+      const v = e.target.value;
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) document.getElementById("accent-picker").value = v;
+    });
+
+    // Step navigation
+    function goToStep(n) {
+      document.querySelectorAll(".step-panel").forEach((p) => p.classList.remove("active"));
+      document.getElementById(n === 3 ? "step-done" : `step-${n}`).classList.add("active");
+
+      document.querySelectorAll(".step-dot").forEach((d, i) => {
+        d.classList.remove("active", "done");
+        if (i < n) d.classList.add("done");
+        else if (i === n) d.classList.add("active");
+      });
+      currentStep = n;
+    }
+
+    function skipStep() { goToStep(currentStep + 1); }
+
+    // Step 1: Save branding
+    async function saveBranding() {
+      const body = {};
+      const name = document.getElementById("brand-name").value.trim();
+      const logo = document.getElementById("logo-url").value.trim();
+      const color = document.getElementById("accent-hex").value.trim();
+      const cta = document.getElementById("cta-text").value.trim();
+      if (name) body.brand_name = name;
+      if (logo) body.logo_url = logo;
+      if (color) body.accent_color = color;
+      if (cta) body.cta_text = cta;
+
+      if (Object.keys(body).length > 0) {
+        try {
+          await fetch(`${BASE}/api/v1/agency/branding`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+            body: JSON.stringify(body),
+          });
+        } catch { /* non-fatal */ }
+      }
+      goToStep(1);
+    }
+
+    // Step 2: Run scan
+    async function runFirstScan() {
+      const url = document.getElementById("scan-url").value.trim();
+      if (!url) return;
+
+      const btn = document.getElementById("btn-scan");
+      btn.disabled = true;
+      btn.textContent = "Scanning...";
+      document.getElementById("scan-result").style.display = "block";
+      document.getElementById("demo-grade").textContent = "Scanning...";
+      document.getElementById("demo-status").textContent = "This takes 15-30 seconds";
+
+      try {
+        const resp = await fetch(`${BASE}/api/v1/scan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+          body: JSON.stringify({ url, tier: "visibility", max_pages: 3 }),
+        });
+        const data = await resp.json();
+        if (data.scores?.combined) {
+          document.getElementById("demo-score").textContent = Math.round(data.scores.combined.overall);
+          document.getElementById("demo-grade").textContent = `Grade: ${data.scores.combined.grade}`;
+          document.getElementById("demo-status").textContent = "Your clients will see the full interactive dashboard";
+        } else if (data.scan_id) {
+          document.getElementById("demo-score").textContent = "...";
+          document.getElementById("demo-grade").textContent = "Scan queued";
+          document.getElementById("demo-status").textContent = `Scan ID: ${data.scan_id} — check results in your dashboard`;
+        }
+      } catch {
+        document.getElementById("demo-grade").textContent = "Scan failed";
+        document.getElementById("demo-status").textContent = "Check the URL and try again";
+      }
+      btn.disabled = false;
+      btn.textContent = "Scan Again";
+    }
+
+    // Step 3: Complete
+    async function completeOnboarding() {
+      // Save webhook if provided
+      const webhook = document.getElementById("webhook-url").value.trim();
+      if (webhook) {
+        try {
+          await fetch(`${BASE}/api/v1/agency/branding`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+            body: JSON.stringify({ lead_webhook_url: webhook }),
+          });
+        } catch { /* non-fatal */ }
+      }
+
+      // Mark onboarding complete
+      try {
+        await fetch(`${BASE}/api/v1/agency/onboarding/complete`, {
+          method: "POST",
+          headers: { "X-API-Key": apiKey },
+        });
+      } catch { /* non-fatal */ }
+
+      goToStep(3);
+    }
+
+    // Copy helper
+    function copyText(id) {
+      const text = document.getElementById(id).textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById(id).parentElement.querySelector("button");
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>
