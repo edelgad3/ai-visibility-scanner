@@ -1,6 +1,6 @@
 {
   "name": "@etherealmedia/ai-visibility-scanner",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "AI Visibility Scanner — MCP App for scanning websites for AI visibility and marketing health",
   "main": "server.mjs",
   "bin": {

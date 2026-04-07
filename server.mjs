@@ -55,6 +55,9 @@ const {
 // REST API module
 const { createApiRouter } = require("./src/api.js");
 
+// Agency REST API module
+const { createAgencyApiRouter } = require("./src/agency-api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -560,8 +563,8 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "2.0.0",
-    description: "Ethereal Forge — AI Visibility Scanner with REST API + MCP",
+    version: "2.1.0",
+    description: "Ethereal Forge — AI Visibility Scanner with REST API + Agency API + MCP",
     endpoints: {
       // REST API (Scan Funnel)
       scan_submit: "POST /api/v1/scan",
@@ -569,6 +572,15 @@ app.get("/", (_req, res) => {
       scan_report: "GET /api/v1/scan/:id/report",
       scan_checkout: "POST /api/v1/scan/checkout",
       scan_tiers: "GET /api/v1/scan/tiers",
+      // Agency API (requires X-API-Key)
+      agency_profile: "GET /api/v1/agency/me",
+      agency_usage: "GET /api/v1/agency/usage",
+      agency_clients: "GET /api/v1/agency/clients",
+      agency_client_scan: "POST /api/v1/agency/clients/:id/scan",
+      agency_scans: "GET /api/v1/agency/scans",
+      agency_billing: "GET /api/v1/agency/billing",
+      agency_branding: "PUT /api/v1/agency/branding",
+      agency_api_keys: "GET /api/v1/agency/api-keys (Pro+)",
       // MCP
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
@@ -583,6 +595,16 @@ app.get("/", (_req, res) => {
 // ── REST API (Scan Funnel) ──
 const apiRouter = createApiRouter(performScan, validateScanUrl);
 app.use(apiRouter);
+
+// ── Agency REST API ──
+const agencyApiRouter = createAgencyApiRouter();
+// Inject performScan + validateScanUrl into agency scan requests
+app.use((req, _res, next) => {
+  req._performScan = performScan;
+  req._validateScanUrl = validateScanUrl;
+  next();
+});
+app.use(agencyApiRouter);
 
 // Session stores (keyed by transport session ID)
 const defaultSessions = new Map();
