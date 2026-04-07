@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import express from "express";
+import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { readFileSync } from "fs";
 import { createRequire } from "module";
@@ -529,6 +530,18 @@ function createServer(agencyConfig = DEFAULT_AGENCY) {
 
 // ── Express Server with Multi-Tenant Routing ──
 const app = express();
+
+// CORS — allow the marketing site and local dev
+app.use(cors({
+  origin: [
+    "https://etherealmedia.ai",
+    "https://www.etherealmedia.ai",
+    /^http:\/\/localhost(:\d+)?$/
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+  credentials: false
+}));
 
 // Security headers
 app.use((_req, res, next) => {
