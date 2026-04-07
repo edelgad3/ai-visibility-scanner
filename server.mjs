@@ -58,6 +58,9 @@ const { createApiRouter } = require("./src/api.js");
 // Agency REST API module
 const { createAgencyApiRouter } = require("./src/agency-api.js");
 
+// Build API module
+const { createBuildApiRouter } = require("./src/build-api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -563,8 +566,8 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "2.1.0",
-    description: "Ethereal Forge — AI Visibility Scanner with REST API + Agency API + MCP",
+    version: "2.2.0",
+    description: "Ethereal Forge — Scan + Build + Agency API + MCP",
     endpoints: {
       // REST API (Scan Funnel)
       scan_submit: "POST /api/v1/scan",
@@ -581,6 +584,13 @@ app.get("/", (_req, res) => {
       agency_billing: "GET /api/v1/agency/billing",
       agency_branding: "PUT /api/v1/agency/branding",
       agency_api_keys: "GET /api/v1/agency/api-keys (Pro+)",
+      // Build API (artifact generators)
+      build_llms_txt: "POST /api/v1/build/geo/llms-txt",
+      build_schema: "POST /api/v1/build/geo/schema",
+      build_robots: "POST /api/v1/build/geo/robots-txt",
+      build_agent_card: "POST /api/v1/build/protocol/agent-card",
+      build_webmcp_forms: "POST /api/v1/build/webmcp/forms",
+      build_package: "POST /api/v1/build/package",
       // MCP
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
@@ -598,6 +608,10 @@ app.use(apiRouter);
 
 // ── Agency REST API ──
 const agencyApiRouter = createAgencyApiRouter();
+
+// ── Build API ──
+const buildApiRouter = createBuildApiRouter();
+app.use(buildApiRouter);
 // Inject performScan + validateScanUrl into agency scan requests
 app.use((req, _res, next) => {
   req._performScan = performScan;
