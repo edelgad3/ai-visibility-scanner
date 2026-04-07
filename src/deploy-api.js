@@ -343,6 +343,7 @@ function createDeployApiRouter() {
 function generateCloudflareWorker(companyName, siteUrl, artifacts) {
   const llmsTxt = artifacts.llms_txt?.content || "";
   const agentCard = artifacts.agent_card?.content || "{}";
+  const ucpManifest = artifacts.ucp_manifest?.content || "{}";
   const schemaHtml = artifacts.schema_org?.content || "";
   const metaTags = artifacts.webmcp_meta?.content || "";
 
@@ -353,6 +354,7 @@ function generateCloudflareWorker(companyName, siteUrl, artifacts) {
 
 const LLMS_TXT = ${JSON.stringify(llmsTxt)};
 const AGENT_CARD = ${JSON.stringify(agentCard)};
+const UCP_MANIFEST = ${JSON.stringify(ucpManifest)};
 
 export default {
   async fetch(request, env) {
@@ -364,6 +366,15 @@ export default {
     }
     if (url.pathname === "/.well-known/agent-card.json") {
       return new Response(AGENT_CARD, { headers: { "Content-Type": "application/json" } });
+    }
+    if (url.pathname === "/.well-known/ucp-manifest.json") {
+      return new Response(UCP_MANIFEST, {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=3600",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
 
     // Pass through to origin
@@ -390,6 +401,7 @@ export default {
 function generateVercelMiddleware(companyName, siteUrl, artifacts) {
   const llmsTxt = artifacts.llms_txt?.content || "";
   const agentCard = artifacts.agent_card?.content || "{}";
+  const ucpManifest = artifacts.ucp_manifest?.content || "{}";
 
   return {
     filename: "middleware.ts",
@@ -399,6 +411,7 @@ import type { NextRequest } from "next/server";
 
 const LLMS_TXT = ${JSON.stringify(llmsTxt)};
 const AGENT_CARD = ${JSON.stringify(agentCard)};
+const UCP_MANIFEST = ${JSON.stringify(ucpManifest)};
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -412,6 +425,16 @@ export function middleware(request: NextRequest) {
   if (pathname === "/.well-known/agent-card.json") {
     return new NextResponse(AGENT_CARD, {
       headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (pathname === "/.well-known/ucp-manifest.json") {
+    return new NextResponse(UCP_MANIFEST, {
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
 

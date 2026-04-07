@@ -65,6 +65,9 @@ const { createBuildApiRouter } = require("./src/build-api.js");
 // Deploy + Webhooks + Analytics + Reports module
 const { createDeployApiRouter } = require("./src/deploy-api.js");
 
+// UCP Commerce API module
+const { createUcpApiRouter } = require("./src/ucp-api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -582,8 +585,8 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "3.0.0",
-    description: "Ethereal Forge — Complete API: Scan + Build + Deploy + Agency + Analytics + MCP",
+    version: "3.1.0",
+    description: "Ethereal Forge — Complete API: Scan + Build + Deploy + Agency + UCP Commerce + Analytics + MCP",
     endpoints: {
       // REST API (Scan Funnel)
       scan_submit: "POST /api/v1/scan",
@@ -622,6 +625,13 @@ app.get("/", (_req, res) => {
       // MCP
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
+      // UCP Commerce (agent-to-business purchasing)
+      ucp_register: "POST /api/v1/ucp/register",
+      ucp_catalog: "GET /api/v1/ucp/catalog",
+      ucp_quote: "POST /api/v1/ucp/quote",
+      ucp_order: "POST /api/v1/ucp/order (X-UCP-Key)",
+      ucp_order_status: "GET /api/v1/ucp/order/:id (X-UCP-Key)",
+      ucp_order_cancel: "POST /api/v1/ucp/order/:id/cancel (X-UCP-Key)",
       // Billing (agency subscriptions)
       billing_checkout: "POST /api/billing/checkout",
       billing_portal: "POST /api/billing/portal",
@@ -644,6 +654,11 @@ app.use(buildApiRouter);
 // ── Deploy + Webhooks + Analytics + Reports ──
 const deployApiRouter = createDeployApiRouter();
 app.use(deployApiRouter);
+
+// ── UCP Commerce API ──
+const ucpApiRouter = createUcpApiRouter();
+app.use(ucpApiRouter);
+
 // Inject performScan + validateScanUrl into agency scan requests
 app.use((req, _res, next) => {
   req._performScan = performScan;

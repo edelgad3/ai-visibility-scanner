@@ -347,25 +347,80 @@ function generateAgentCard({ company_name, url, description, services, email, ve
   };
 }
 
-function generateUcpManifest({ company_name, url, services, currency = "USD" }) {
+function generateUcpManifest({
+  company_name, url, services, currency = "USD", email,
+  // v2.0.0 extended fields
+  ucp_api_base,
+  capabilities: capOverrides,
+  payment_methods,
+  fulfillment_types,
+  policies,
+  agent_permissions: permOverrides,
+  webhooks: webhookOverrides,
+}) {
+  const base = (ucp_api_base || url).replace(/\/$/, "");
+
   const offerings = (services || []).filter(s => s.price).map(svc => ({
     id: (svc.name || "service").toLowerCase().replace(/\s+/g, "-"),
     name: svc.name,
     description: svc.description || "",
     price: { amount: svc.price, currency },
-    type: "service",
-    fulfillment: "manual",
-    endpoint: `${url.replace(/\/$/, "")}/api/purchase`,
+    type: svc.type || "service",
+    fulfillment: svc.fulfillment || "manual",
+    requires_auth: svc.requires_auth !== false,
   }));
+
+  const hasPurchasable = offerings.length > 0;
 
   const manifest = {
     name: company_name,
     url,
-    version: "1.0.0",
+    version: "2.0.0",
     protocol: "ucp",
-    capabilities: { purchase: offerings.length > 0, quote: true, inquiry: true },
+    capabilities: {
+      purchase: hasPurchasable,
+      quote: true,
+      inquiry: true,
+      negotiate: false,
+      subscribe: false,
+      ...capOverrides,
+    },
+    authentication: {
+      type: "api_key",
+      header: "X-UCP-Key",
+      registration_url: `${base}/api/v1/ucp/register`,
+    },
+    payment_methods: payment_methods || ["stripe", "invoice"],
+    fulfillment_types: fulfillment_types || ["digital", "manual", "api"],
     offerings,
-    contact: { url: `${url.replace(/\/$/, "")}/contact`, method: "form" },
+    policies: {
+      refund_window_days: 30,
+      cancellation: "anytime",
+      ...policies,
+    },
+    agent_permissions: {
+      browse_catalog: "public",
+      get_quote: "public",
+      place_order: "authenticated",
+      negotiate: "authenticated",
+      ...permOverrides,
+    },
+    endpoints: {
+      register: `${base}/api/v1/ucp/register`,
+      catalog: `${base}/api/v1/ucp/catalog`,
+      quote: `${base}/api/v1/ucp/quote`,
+      order: `${base}/api/v1/ucp/order`,
+    },
+    webhooks: webhookOverrides || {
+      order_created: null,
+      order_fulfilled: null,
+      order_cancelled: null,
+    },
+    contact: {
+      url: `${url.replace(/\/$/, "")}/contact`,
+      method: "form",
+      ...(email ? { email } : {}),
+    },
   };
 
   return {
