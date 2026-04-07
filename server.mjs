@@ -52,6 +52,9 @@ const {
   getAgencyByApiKey,
 } = require("./src/billing.js");
 
+// REST API module
+const { createApiRouter } = require("./src/api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -92,16 +95,25 @@ async function validateScanUrl(urlStr) {
     throw new Error(`Blocked protocol: ${parsed.protocol}. Only http/https allowed.`);
   }
 
-  // Resolve hostname to IP and check against blocked ranges
+  // Check if hostname is a literal IP address — test directly against blocked ranges
+  // Node URL parser wraps IPv6 in brackets, e.g. [::1] — strip them
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  for (const pattern of BLOCKED_IP_RANGES) {
+    if (pattern.test(hostname)) {
+      throw new Error(`Blocked: ${hostname} is a private/internal IP`);
+    }
+  }
+
+  // Resolve hostname to IP and check resolved addresses too (DNS rebinding protection)
   try {
-    const addresses = await dns.resolve4(parsed.hostname).catch(() => []);
-    const addresses6 = await dns.resolve6(parsed.hostname).catch(() => []);
+    const addresses = await dns.resolve4(hostname).catch(() => []);
+    const addresses6 = await dns.resolve6(hostname).catch(() => []);
     const allAddrs = [...addresses, ...addresses6];
 
     for (const addr of allAddrs) {
       for (const pattern of BLOCKED_IP_RANGES) {
         if (pattern.test(addr)) {
-          throw new Error(`Blocked: ${parsed.hostname} resolves to private IP`);
+          throw new Error(`Blocked: ${hostname} resolves to private IP`);
         }
       }
     }
@@ -548,17 +560,29 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "1.2.0",
-    description: "Multi-tenant AI Visibility Scanner — scan websites for AI readiness and marketing health",
+    version: "2.0.0",
+    description: "Ethereal Forge — AI Visibility Scanner with REST API + MCP",
     endpoints: {
+      // REST API (Scan Funnel)
+      scan_submit: "POST /api/v1/scan",
+      scan_status: "GET /api/v1/scan/:id",
+      scan_report: "GET /api/v1/scan/:id/report",
+      scan_checkout: "POST /api/v1/scan/checkout",
+      scan_tiers: "GET /api/v1/scan/tiers",
+      // MCP
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
+      // Billing (agency subscriptions)
       billing_checkout: "POST /api/billing/checkout",
       billing_portal: "POST /api/billing/portal",
       billing_webhook: "POST /api/billing/webhook",
     },
   });
 });
+
+// ── REST API (Scan Funnel) ──
+const apiRouter = createApiRouter(performScan, validateScanUrl);
+app.use(apiRouter);
 
 // Session stores (keyed by transport session ID)
 const defaultSessions = new Map();
@@ -891,7 +915,9 @@ h1{color:#ef4444}</style></head>
 
 const PORT = process.env.PORT || 3001;
 const httpServer = app.listen(PORT, () => {
-  console.log(`AI Visibility Scanner MCP App running on :${PORT}`);
+  console.log(`Ethereal Forge v2.0.0 running on :${PORT}`);
+  console.log(`REST API:    http://localhost:${PORT}/api/v1/scan`);
+  console.log(`Tiers:       http://localhost:${PORT}/api/v1/scan/tiers`);
   console.log(`Default MCP: http://localhost:${PORT}/mcp`);
   console.log(`Agency MCP:  http://localhost:${PORT}/a/:slug/mcp`);
   console.log(`Billing:     http://localhost:${PORT}/api/billing/plans`);
