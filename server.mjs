@@ -157,7 +157,18 @@ async function performScan(url, maxPages = 5, industry = "general") {
   // Each scan gets its own browser instance — no shared singleton, no race conditions
   const browser = await createBrowser();
   try {
-    const homepageAnalysis = await analyzePage(url, "homepage", true, browser);
+    let homepageAnalysis;
+    try {
+      homepageAnalysis = await analyzePage(url, "homepage", true, browser);
+    } catch (homeErr) {
+      console.error(`Homepage analysis failed for ${url}:`, homeErr.message);
+      // Return partial results with what endpoint probes found
+      homepageAnalysis = {
+        url, type: "homepage", status_code: 0, response_time_ms: 0,
+        extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {} },
+        scores: {}, overall: 0, js_diff: null, _internalLinks: [],
+      };
+    }
 
     const subpageCandidates = discoverSubpages(homepageAnalysis._internalLinks || [], maxPages);
     const subpageResults = [];

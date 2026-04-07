@@ -161,6 +161,10 @@ async function getPriceIdForTier(tier) {
   return match?.id || null;
 }
 
+// ── Idempotency: track processed event IDs ──
+const processedEvents = new Set();
+const MAX_PROCESSED_EVENTS = 10000;
+
 // ── Webhook handler ──
 async function handleWebhook(rawBody, signature) {
   const s = getStripe();
@@ -170,7 +174,18 @@ async function handleWebhook(rawBody, signature) {
 
   const event = s.webhooks.constructEvent(rawBody, signature, webhookSecret);
 
-  console.log(`Stripe event: ${event.type}`);
+  // Idempotency check — skip duplicate events
+  if (processedEvents.has(event.id)) {
+    console.log(`Stripe event ${event.id} already processed — skipping`);
+    return { received: true, type: event.type, duplicate: true };
+  }
+  processedEvents.add(event.id);
+  if (processedEvents.size > MAX_PROCESSED_EVENTS) {
+    const first = processedEvents.values().next().value;
+    processedEvents.delete(first);
+  }
+
+  console.log(`Stripe event: ${event.type} (${event.id})`);
 
   switch (event.type) {
     case "checkout.session.completed":
