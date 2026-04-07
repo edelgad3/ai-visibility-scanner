@@ -61,6 +61,9 @@ const { createAgencyApiRouter } = require("./src/agency-api.js");
 // Build API module
 const { createBuildApiRouter } = require("./src/build-api.js");
 
+// Deploy + Webhooks + Analytics + Reports module
+const { createDeployApiRouter } = require("./src/deploy-api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -566,8 +569,8 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     name: "AI Visibility Scanner",
-    version: "2.2.0",
-    description: "Ethereal Forge — Scan + Build + Agency API + MCP",
+    version: "3.0.0",
+    description: "Ethereal Forge — Complete API: Scan + Build + Deploy + Agency + Analytics + MCP",
     endpoints: {
       // REST API (Scan Funnel)
       scan_submit: "POST /api/v1/scan",
@@ -591,6 +594,18 @@ app.get("/", (_req, res) => {
       build_agent_card: "POST /api/v1/build/protocol/agent-card",
       build_webmcp_forms: "POST /api/v1/build/webmcp/forms",
       build_package: "POST /api/v1/build/package",
+      // Deploy
+      deploy_edge: "POST /api/v1/build/deploy/edge",
+      deploy_pr: "POST /api/v1/build/deploy/pr",
+      deploy_plugin: "POST /api/v1/build/deploy/plugin",
+      // Webhooks
+      webhooks_register: "POST /api/v1/webhooks",
+      // Analytics
+      analytics_overview: "GET /api/v1/analytics/:scanId/overview",
+      analytics_conversions: "GET /api/v1/analytics/:scanId/conversions",
+      // Reports
+      report_pdf: "GET /api/v1/reports/:scanId/pdf",
+      report_competitive: "GET /api/v1/reports/:scanId/competitive",
       // MCP
       default_mcp: "/mcp",
       agency_mcp: "/a/:slug/mcp?key=xxx",
@@ -612,6 +627,10 @@ const agencyApiRouter = createAgencyApiRouter();
 // ── Build API ──
 const buildApiRouter = createBuildApiRouter();
 app.use(buildApiRouter);
+
+// ── Deploy + Webhooks + Analytics + Reports ──
+const deployApiRouter = createDeployApiRouter();
+app.use(deployApiRouter);
 // Inject performScan + validateScanUrl into agency scan requests
 app.use((req, _res, next) => {
   req._performScan = performScan;
