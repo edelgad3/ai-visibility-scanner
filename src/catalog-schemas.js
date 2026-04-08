@@ -18,6 +18,7 @@ const assetStatus = z.enum(["detected", "reviewed", "enhanced", "archived"]);
 const annotationType = z.enum([
   "aria", "schema_org", "webmcp", "a2ui",
   "llms_txt", "semantic_html", "agent_card",
+  "ag_ui", "acp", "anp",
 ]);
 
 const catalogListQuery = paginationQuery.extend({
@@ -51,7 +52,7 @@ const annotationBulkBody = z.object({
       annotation_type: annotationType,
       override_value: z.record(z.unknown()),
     })
-  ).min(1).max(7),
+  ).min(1).max(10),
 });
 
 const customAnnotationCreate = z.object({
@@ -96,7 +97,7 @@ const catalogCompareQuery = z.object({
 });
 
 const agentPreviewQuery = paginationQuery.extend({
-  format: z.enum(["all", "llms_txt", "agent_card", "webmcp", "a2ui"]).default("all"),
+  format: z.enum(["all", "llms_txt", "agent_card", "webmcp", "a2ui", "ag_ui", "acp", "anp"]).default("all"),
   use_overrides: z.coerce.boolean().default(true),
 });
 

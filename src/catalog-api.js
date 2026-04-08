@@ -1193,7 +1193,16 @@ function generateAnnotations(asset) {
     });
   }
 
-  // Protocol items get llms_txt + agent_card
+  // Form items also get ag_ui (streaming interaction layer)
+  if (cat === "form" || raw.toolname || raw.fields) {
+    annotations.push({
+      annotation_type: "ag_ui",
+      recommended_value: inferAgUiAnnotation(asset),
+      completeness_score: scoreAnnotation("ag_ui", inferAgUiAnnotation(asset)),
+    });
+  }
+
+  // Protocol items get llms_txt + agent_card + acp + anp
   if (cat === "protocol" || raw.protocol_type) {
     annotations.push({
       annotation_type: "llms_txt",
@@ -1204,6 +1213,16 @@ function generateAnnotations(asset) {
       annotation_type: "agent_card",
       recommended_value: inferAgentCardAnnotation(asset),
       completeness_score: scoreAnnotation("agent_card", inferAgentCardAnnotation(asset)),
+    });
+    annotations.push({
+      annotation_type: "acp",
+      recommended_value: inferAcpAnnotation(asset),
+      completeness_score: scoreAnnotation("acp", inferAcpAnnotation(asset)),
+    });
+    annotations.push({
+      annotation_type: "anp",
+      recommended_value: inferAnpAnnotation(asset),
+      completeness_score: scoreAnnotation("anp", inferAnpAnnotation(asset)),
     });
   }
 
@@ -1283,6 +1302,37 @@ function inferAgentCardAnnotation(asset) {
     capability: asset.name?.toLowerCase().replace(/\s+/g, "_") || null,
     endpoint: null,
     method: null,
+    description: asset.content_summary || null,
+  };
+}
+
+function inferAgUiAnnotation(asset) {
+  const raw = asset.raw_value || {};
+  return {
+    stream_endpoint: null,
+    event_types: raw.event_types || [],
+    supports_sse: raw.supports_sse || false,
+    copilotkit_action: raw.copilotkit_action || null,
+    description: asset.content_summary || null,
+  };
+}
+
+function inferAcpAnnotation(asset) {
+  return {
+    endpoint: null,
+    method: null,
+    message_types: [],
+    auth_required: true,
+    description: asset.content_summary || null,
+  };
+}
+
+function inferAnpAnnotation(asset) {
+  return {
+    did_method: null,
+    did_id: null,
+    verification_method: null,
+    service_endpoints: [],
     description: asset.content_summary || null,
   };
 }

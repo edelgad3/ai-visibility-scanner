@@ -518,6 +518,42 @@ function extractAISignals($js, jsHtml, rawHtml, $raw) {
     has_aria_labels: ariaCount > 0,
   };
 
+  // ── Protocol SDK / DOM Detection ──
+  // A2UI: Google Agent-to-UI — look for SDK scripts, data-a2ui attributes, meta tags
+  const a2uiScripts = $js('script[src*="a2ui"], script[src*="agent-to-ui"], script[src*="google.com/a2ui"]').length;
+  const a2uiAttrs = $js('[data-a2ui], [data-a2ui-component], [data-a2ui-action]').length;
+  const a2uiMeta = $js('meta[name="a2ui:version"], meta[name="a2ui:capabilities"]').length;
+  const has_a2ui_dom = (a2uiScripts + a2uiAttrs + a2uiMeta) > 0;
+
+  // AG-UI: CopilotKit Agent-User Interaction — SSE/streaming, CopilotKit SDK
+  const agUiScripts = $js('script[src*="copilotkit"], script[src*="ag-ui"], script[src*="agui"]').length;
+  const agUiMeta = $js('meta[name="ag-ui:version"], meta[name="ag-ui:endpoint"]').length;
+  const agUiSse = htmlLower.includes('text/event-stream') || htmlLower.includes('ag-ui-stream');
+  const has_ag_ui_dom = (agUiScripts + agUiMeta) > 0 || agUiSse;
+
+  // ACP: Agent Communication Protocol — RESTful agent endpoints
+  const acpMeta = $js('meta[name="acp:version"], meta[name="acp:endpoint"], link[rel="acp-manifest"]').length;
+  const acpLinks = $js('a[href*="/.well-known/acp"], link[href*="acp.json"]').length;
+  const has_acp_dom = (acpMeta + acpLinks) > 0;
+
+  // ANP: Agent Network Protocol — W3C DIDs, decentralized identity
+  const didMeta = $js('meta[name="did:id"], meta[name="anp:version"], link[rel="did-configuration"]').length;
+  const didLinks = $js('a[href*="/.well-known/did"], link[href*="did.json"]').length;
+  const has_anp_dom = (didMeta + didLinks) > 0 || htmlLower.includes('did:web:') || htmlLower.includes('did:key:');
+
+  // WebMCP navigator.modelContext detection (in-page script registration)
+  const hasModelContext = htmlLower.includes('navigator.modelcontext') || htmlLower.includes('model-context');
+  const modelContextMeta = $js('meta[name="model-context"], meta[name="model-context:name"]').length;
+  const has_webmcp_registration = hasModelContext || modelContextMeta > 0;
+
+  const protocol_signals = {
+    a2ui: { scripts: a2uiScripts, attributes: a2uiAttrs, meta: a2uiMeta, detected: has_a2ui_dom },
+    ag_ui: { scripts: agUiScripts, meta: agUiMeta, sse: agUiSse, detected: has_ag_ui_dom },
+    acp: { meta: acpMeta, links: acpLinks, detected: has_acp_dom },
+    anp: { meta: didMeta, links: didLinks, detected: has_anp_dom },
+    webmcp_registration: { navigator_api: hasModelContext, meta: modelContextMeta, detected: has_webmcp_registration },
+  };
+
   // Digital assets
   const downloadLinkCount = ($js('a[href$=".pdf"], a[href$=".zip"], a[href$=".doc"], a[href$=".docx"], a[href$=".xls"], a[href$=".xlsx"], a[href$=".csv"], a[href$=".mp3"], a[href$=".mp4"]').length);
   const downloadAttrCount = $js('a[download]').length;
@@ -529,7 +565,7 @@ function extractAISignals($js, jsHtml, rawHtml, $raw) {
     has_digital_asset_schema: schema.has_software_app || schema.has_data_download || schema.has_digital_document || schema.has_media_object,
   };
 
-  return { schema, meta, media, aeo, digital_assets };
+  return { schema, meta, media, aeo, digital_assets, protocol_signals };
 }
 
 

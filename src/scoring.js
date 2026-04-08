@@ -48,20 +48,33 @@ function computeScores(checks) {
   multimodal = Math.min(100, multimodal);
 
   // ── Agent-Ready Score (0-100) ──
+  // Core protocol stack (9 protocols)
   let agentReady = 0;
-  if (checks.llms_txt.exists) agentReady += 10;
-  if (checks.llms_full_txt.exists) agentReady += 5;
-  if (checks.agent_card.exists) agentReady += 10;
-  if (checks.ucp.exists) agentReady += 5;
-  if (checks.aeo.has_declarative_webmcp) agentReady += 15;
-  if (checks.aeo.semantic_score >= 5) agentReady += 10;
-  else if (checks.aeo.semantic_score >= 3) agentReady += 5;
-  if (checks.aeo.aria_count >= 5) agentReady += 5;
-  if (checks.sitemap.exists) agentReady += 5;
-  if (!checks.media.is_spa) agentReady += 10;
-  if (checks.schema.schema_count >= 3) agentReady += 5;
-  if (checks.meta.has_structured_contact) agentReady += 5;
-  if (checks.digital_assets.has_digital_assets && checks.digital_assets.has_digital_asset_schema) agentReady += 5;
+  if (checks.llms_txt.exists) agentReady += 8;
+  if (checks.llms_full_txt.exists) agentReady += 4;
+  if (checks.agent_card.exists) agentReady += 8;
+  if (checks.ucp.exists) agentReady += 4;
+  if (checks.aeo.has_declarative_webmcp) agentReady += 10;
+  // New protocols (A2UI, AG-UI, ACP, ANP)
+  const a2uiDetected = checks.a2ui?.exists || checks.protocol_signals?.a2ui?.detected;
+  const agUiDetected = checks.ag_ui?.exists || checks.protocol_signals?.ag_ui?.detected;
+  const acpDetected = checks.acp?.exists || checks.protocol_signals?.acp?.detected;
+  const anpDetected = checks.anp?.exists || checks.protocol_signals?.anp?.detected;
+  if (a2uiDetected) agentReady += 8;
+  if (agUiDetected) agentReady += 6;
+  if (acpDetected) agentReady += 6;
+  if (anpDetected) agentReady += 4;
+  // WebMCP navigator.modelContext registration
+  if (checks.protocol_signals?.webmcp_registration?.detected) agentReady += 4;
+  // Infrastructure signals
+  if (checks.aeo.semantic_score >= 5) agentReady += 8;
+  else if (checks.aeo.semantic_score >= 3) agentReady += 4;
+  if (checks.aeo.aria_count >= 5) agentReady += 4;
+  if (checks.sitemap.exists) agentReady += 4;
+  if (!checks.media.is_spa) agentReady += 8;
+  if (checks.schema.schema_count >= 3) agentReady += 4;
+  if (checks.meta.has_structured_contact) agentReady += 4;
+  if (checks.digital_assets.has_digital_assets && checks.digital_assets.has_digital_asset_schema) agentReady += 4;
   agentReady = Math.min(100, agentReady);
 
   const overall = Math.round(((geo + multimodal + agentReady) / 3) * 10) / 10;
@@ -186,6 +199,35 @@ function generateFindings(checks) {
     });
   }
 
+  // ── New Protocol Findings (A2UI, AG-UI, ACP, ANP) ──
+
+  if (!checks.a2ui?.exists && !checks.protocol_signals?.a2ui?.detected) {
+    p1.push({
+      action: 'Deploy A2UI configuration for agent-driven UI rendering',
+      detail: 'Google\'s A2UI protocol lets AI agents render and interact with your UI components directly. Without it, agents must scrape and guess.',
+      impact: 'high', source: 'aeo', effort: 'medium',
+      revenue_impact: { monthly_estimate_low: 200, monthly_estimate_mid: 800, monthly_estimate_high: 1500 }
+    });
+  }
+
+  if (!checks.ag_ui?.exists && !checks.protocol_signals?.ag_ui?.detected) {
+    p1.push({
+      action: 'Add AG-UI streaming endpoint for real-time agent interaction',
+      detail: 'AG-UI (CopilotKit) enables agents to stream responses and co-pilot experiences in your app. Growing ecosystem with CopilotKit adoption.',
+      impact: 'medium', source: 'aeo', effort: 'medium',
+      revenue_impact: { monthly_estimate_low: 150, monthly_estimate_mid: 600, monthly_estimate_high: 1200 }
+    });
+  }
+
+  if (!checks.acp?.exists && !checks.protocol_signals?.acp?.detected) {
+    p1.push({
+      action: 'Expose ACP endpoint for agent-to-agent communication',
+      detail: 'The Agent Communication Protocol enables RESTful agent messaging. Required for multi-agent workflows that include your services.',
+      impact: 'medium', source: 'aeo', effort: 'medium',
+      revenue_impact: { monthly_estimate_low: 100, monthly_estimate_mid: 500, monthly_estimate_high: 1000 }
+    });
+  }
+
   if (!checks.aeo.has_main) {
     p1.push({
       action: 'Add <main> tag for primary content region',
@@ -227,6 +269,14 @@ function generateFindings(checks) {
   }
 
   // ── P2: Nice-to-have (within 90 days) ──
+
+  if (!checks.anp?.exists && !checks.protocol_signals?.anp?.detected) {
+    p2.push({
+      action: 'Publish W3C DID document for decentralized agent identity',
+      detail: 'The Agent Network Protocol uses W3C DIDs for verifiable agent identity. Early adopters gain trust signals in the emerging decentralized agent economy.',
+      impact: 'low', source: 'aeo', effort: 'high',
+    });
+  }
 
   if (!checks.ucp.exists && !checks.digital_assets.has_digital_assets) {
     p2.push({
@@ -397,18 +447,23 @@ const SCORE_RULES = {
     { name: 'Transcripts Available', check: (c) => c.digital_assets.has_transcripts, points: 5, desc: 'Text versions of audio/video for AI processing' },
   ],
   agent_ready: [
-    { name: 'llms.txt', check: (c) => c.llms_txt.exists, points: 10, desc: 'AI context file for agent discovery' },
-    { name: 'llms-full.txt', check: (c) => c.llms_full_txt.exists, points: 5, desc: 'Extended context with full business details' },
-    { name: 'Agent Card (A2A)', check: (c) => c.agent_card.exists, points: 10, desc: 'Agent-to-agent discovery endpoint' },
-    { name: 'UCP Endpoint', check: (c) => c.ucp.exists, points: 5, desc: 'Universal Commerce Protocol for AI purchasing' },
-    { name: 'WebMCP Forms', check: (c) => c.aeo.has_declarative_webmcp, points: 15, desc: 'Declarative form attributes AI agents can execute' },
-    { name: 'Semantic HTML (5+)', check: (c) => c.aeo.semantic_score >= 5, points: 10, altCheck: (c) => c.aeo.semantic_score >= 3, altPoints: 5, desc: 'Rich semantic tags for AI content parsing' },
-    { name: 'ARIA Labels (5+)', check: (c) => c.aeo.aria_count >= 5, points: 5, desc: 'Accessible labels for interactive elements' },
-    { name: 'XML Sitemap', check: (c) => c.sitemap.exists, points: 5, desc: 'URL discovery for agent crawling' },
-    { name: 'Not SPA-Only', check: (c) => !c.media.is_spa, points: 10, desc: 'Server-rendered content AI can read without JS' },
-    { name: 'Schema Count (3+)', check: (c) => c.schema.schema_count >= 3, points: 5, desc: 'Rich structured data coverage' },
-    { name: 'Structured Contact', check: (c) => c.meta.has_structured_contact, points: 5, desc: 'Machine-readable contact information' },
-    { name: 'Digital Asset Schema', check: (c) => c.digital_assets.has_digital_assets && c.digital_assets.has_digital_asset_schema, points: 5, desc: 'Downloadable content with structured metadata' },
+    { name: 'llms.txt', check: (c) => c.llms_txt.exists, points: 8, desc: 'AI context file for agent discovery' },
+    { name: 'llms-full.txt', check: (c) => c.llms_full_txt.exists, points: 4, desc: 'Extended context with full business details' },
+    { name: 'Agent Card (A2A)', check: (c) => c.agent_card.exists, points: 8, desc: 'Agent-to-agent discovery endpoint' },
+    { name: 'UCP Endpoint', check: (c) => c.ucp.exists, points: 4, desc: 'Universal Commerce Protocol for AI purchasing' },
+    { name: 'WebMCP Forms', check: (c) => c.aeo.has_declarative_webmcp, points: 10, desc: 'Declarative form attributes AI agents can execute' },
+    { name: 'A2UI Config', check: (c) => c.a2ui?.exists || c.protocol_signals?.a2ui?.detected, points: 8, desc: 'Google Agent-to-UI protocol — agent-driven UI rendering' },
+    { name: 'AG-UI (CopilotKit)', check: (c) => c.ag_ui?.exists || c.protocol_signals?.ag_ui?.detected, points: 6, desc: 'Agent-User Interaction — real-time streaming UI' },
+    { name: 'ACP Endpoint', check: (c) => c.acp?.exists || c.protocol_signals?.acp?.detected, points: 6, desc: 'Agent Communication Protocol — RESTful agent messaging' },
+    { name: 'ANP / DID', check: (c) => c.anp?.exists || c.protocol_signals?.anp?.detected, points: 4, desc: 'Agent Network Protocol — decentralized identity (W3C DIDs)' },
+    { name: 'WebMCP Registration', check: (c) => c.protocol_signals?.webmcp_registration?.detected, points: 4, desc: 'navigator.modelContext API registration for in-page tools' },
+    { name: 'Semantic HTML (5+)', check: (c) => c.aeo.semantic_score >= 5, points: 8, altCheck: (c) => c.aeo.semantic_score >= 3, altPoints: 4, desc: 'Rich semantic tags for AI content parsing' },
+    { name: 'ARIA Labels (5+)', check: (c) => c.aeo.aria_count >= 5, points: 4, desc: 'Accessible labels for interactive elements' },
+    { name: 'XML Sitemap', check: (c) => c.sitemap.exists, points: 4, desc: 'URL discovery for agent crawling' },
+    { name: 'Not SPA-Only', check: (c) => !c.media.is_spa, points: 8, desc: 'Server-rendered content AI can read without JS' },
+    { name: 'Schema Count (3+)', check: (c) => c.schema.schema_count >= 3, points: 4, desc: 'Rich structured data coverage' },
+    { name: 'Structured Contact', check: (c) => c.meta.has_structured_contact, points: 4, desc: 'Machine-readable contact information' },
+    { name: 'Digital Asset Schema', check: (c) => c.digital_assets.has_digital_assets && c.digital_assets.has_digital_asset_schema, points: 4, desc: 'Downloadable content with structured metadata' },
   ],
 };
 

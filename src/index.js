@@ -38,6 +38,10 @@ async function run() {
     console.log(`  llms-full.txt: ${rawEndpoints.llms_full_txt.exists ? `FOUND (${rawEndpoints.llms_full_txt.length} chars)` : 'MISSING'}`);
     console.log(`  agent-card.json: ${rawEndpoints.agent_card.exists ? 'FOUND' : 'MISSING'}`);
     console.log(`  ucp: ${rawEndpoints.ucp.exists ? 'FOUND' : 'MISSING'}`);
+    console.log(`  a2ui-config: ${rawEndpoints.a2ui.exists ? 'FOUND' : 'MISSING'}`);
+    console.log(`  ag-ui manifest: ${rawEndpoints.ag_ui.exists ? 'FOUND' : 'MISSING'}`);
+    console.log(`  acp: ${rawEndpoints.acp.exists ? 'FOUND' : 'MISSING'}`);
+    console.log(`  anp/did: ${rawEndpoints.anp.exists ? 'FOUND' : 'MISSING'}${rawEndpoints.anp.has_did ? ' (DID doc)' : ''}`);
 
     // ── Step 2: Analyze homepage (with full signal extraction) ──
     console.log('\n[2/4] Analyzing homepage (raw HTTP + Puppeteer JS)...');
@@ -84,11 +88,16 @@ async function run() {
       llms_full_txt: rawEndpoints.llms_full_txt,
       agent_card: rawEndpoints.agent_card,
       ucp: rawEndpoints.ucp,
+      a2ui: rawEndpoints.a2ui,
+      ag_ui: rawEndpoints.ag_ui,
+      acp: rawEndpoints.acp,
+      anp: rawEndpoints.anp,
       schema: homepageAnalysis.extracted.schema,
       meta: homepageAnalysis.extracted.meta,
       media: homepageAnalysis.extracted.media,
       aeo: homepageAnalysis.extracted.aeo,
       digital_assets: homepageAnalysis.extracted.digital_assets,
+      protocol_signals: homepageAnalysis.extracted.protocol_signals,
     };
 
     // AI Visibility scores

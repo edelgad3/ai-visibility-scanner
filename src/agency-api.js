@@ -1180,6 +1180,10 @@ function buildInventory(results, client, scan) {
     { name: "llms-full.txt", type: "protocol", exists: !!checks.llms_full_txt?.exists, detail: checks.llms_full_txt?.length ? `${checks.llms_full_txt.length} chars` : null },
     { name: "agent-card.json", type: "protocol", exists: !!checks.agent_card?.exists },
     { name: "UCP manifest", type: "protocol", exists: !!checks.ucp?.exists },
+    { name: "A2UI config", type: "protocol", exists: !!(checks.a2ui?.exists || checks.protocol_signals?.a2ui?.detected), detail: checks.a2ui?.version ? `v${checks.a2ui.version}` : null },
+    { name: "AG-UI manifest", type: "protocol", exists: !!(checks.ag_ui?.exists || checks.protocol_signals?.ag_ui?.detected), detail: checks.ag_ui?.version ? `v${checks.ag_ui.version}` : null },
+    { name: "ACP endpoint", type: "protocol", exists: !!(checks.acp?.exists || checks.protocol_signals?.acp?.detected), detail: checks.acp?.version ? `v${checks.acp.version}` : null },
+    { name: "ANP / DID", type: "protocol", exists: !!(checks.anp?.exists || checks.protocol_signals?.anp?.detected), detail: checks.anp?.has_did ? "DID document found" : null },
   ];
 
   // ── 2. Schema Markup ──
