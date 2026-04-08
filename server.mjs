@@ -187,7 +187,7 @@ async function performScan(url, maxPages = 5, industry = "general") {
       console.error(`Homepage analysis failed for ${url}:`, homeErr.message);
       homepageAnalysis = {
         url, type: "homepage", status_code: 0, response_time_ms: 0,
-        extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {} },
+        extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {}, protocol_signals: {} },
         scores: {}, overall: 0, seo_details: null, js_diff: null, _internalLinks: [],
       };
     }
@@ -210,11 +210,16 @@ async function performScan(url, maxPages = 5, industry = "general") {
       llms_full_txt: rawEndpoints.llms_full_txt,
       agent_card: rawEndpoints.agent_card,
       ucp: rawEndpoints.ucp,
+      a2ui: rawEndpoints.a2ui,
+      ag_ui: rawEndpoints.ag_ui,
+      acp: rawEndpoints.acp,
+      anp: rawEndpoints.anp,
       schema: homepageAnalysis.extracted.schema,
       meta: homepageAnalysis.extracted.meta,
       media: homepageAnalysis.extracted.media,
       aeo: homepageAnalysis.extracted.aeo,
       digital_assets: homepageAnalysis.extracted.digital_assets,
+      protocol_signals: homepageAnalysis.extracted.protocol_signals,
     };
 
     const aiScores = computeScores(checks);
