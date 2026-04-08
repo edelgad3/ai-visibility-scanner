@@ -69,12 +69,12 @@ function render() {
   setText("client-name", client?.name || "");
   setText("scan-date", client?.audit_date || "");
 
-  // Combined gauge
-  const combined = scores?.combined?.overall || 0;
-  setText("combined-score", String(Math.round(combined)));
-  setText("combined-grade", scores?.combined?.grade || "--");
-  setGauge("gauge-combined-fill", combined);
-  colorByScore("combined-score", combined);
+  // Forge Score gauge (was "Combined")
+  const forgeScore = scores?.forge_score?.overall || scores?.combined?.overall || 0;
+  setText("combined-score", String(Math.round(forgeScore)));
+  setText("combined-grade", scores?.forge_score?.grade || scores?.combined?.grade || "--");
+  setGauge("gauge-combined-fill", forgeScore);
+  colorByScore("combined-score", forgeScore);
 
   // AI Visibility
   const ai = scores?.ai_visibility || {};
@@ -101,6 +101,22 @@ function render() {
         const label = val?.label || "";
         return `<div class="dim"><span class="dim-label">${esc(label)}</span><span class="dim-val ${scoreClass(score)}">${Math.round(score)}</span></div>`;
       }).join("");
+  }
+
+  // SEO Health
+  const seo = scores?.seo_health || {};
+  setText("seo-score", String(Math.round(seo.overall || 0)));
+  setText("seo-grade", seo.grade || "--");
+  colorByScore("seo-score", seo.overall || 0);
+  if (seo.sub_scores) {
+    setText("cwv-score", String(seo.sub_scores.cwv || 0));
+    setText("tech-seo-score", String(seo.sub_scores.technical || 0));
+    setText("onpage-score", String(seo.sub_scores.on_page || 0));
+    setText("mobile-score", String(seo.sub_scores.mobile_perf || 0));
+    colorByScore("cwv-score", seo.sub_scores.cwv || 0);
+    colorByScore("tech-seo-score", seo.sub_scores.technical || 0);
+    colorByScore("onpage-score", seo.sub_scores.on_page || 0);
+    colorByScore("mobile-score", seo.sub_scores.mobile_perf || 0);
   }
 
   // Revenue
@@ -286,10 +302,16 @@ function renderComparison(data: any) {
         <div class="compare-delta">${arrow(delta?.marketing_health || 0)}</div>
       </div>
       <div class="compare-col">
-        <div class="compare-label">Combined</div>
-        <div class="compare-you ${scoreClass(primary?.combined?.overall || 0)}"><strong>${Math.round(primary?.combined?.overall || 0)}</strong></div>
-        <div class="compare-them ${scoreClass(competitor?.combined?.overall || 0)}"><strong>${Math.round(competitor?.combined?.overall || 0)}</strong></div>
-        <div class="compare-delta"><strong>${arrow(delta?.combined || 0)}</strong></div>
+        <div class="compare-label">SEO Health</div>
+        <div class="compare-you ${scoreClass(primary?.seo_health?.overall || 0)}">${Math.round(primary?.seo_health?.overall || 0)}</div>
+        <div class="compare-them ${scoreClass(competitor?.seo_health?.overall || 0)}">${Math.round(competitor?.seo_health?.overall || 0)}</div>
+        <div class="compare-delta">${arrow(delta?.seo_health || 0)}</div>
+      </div>
+      <div class="compare-col">
+        <div class="compare-label">Forge Score</div>
+        <div class="compare-you ${scoreClass(primary?.forge_score?.overall || primary?.combined?.overall || 0)}"><strong>${Math.round(primary?.forge_score?.overall || primary?.combined?.overall || 0)}</strong></div>
+        <div class="compare-them ${scoreClass(competitor?.forge_score?.overall || competitor?.combined?.overall || 0)}"><strong>${Math.round(competitor?.forge_score?.overall || competitor?.combined?.overall || 0)}</strong></div>
+        <div class="compare-delta"><strong>${arrow(delta?.forge_score || delta?.combined || 0)}</strong></div>
       </div>
     </div>
   `;
@@ -306,7 +328,7 @@ async function showDrillDown(dimension: string) {
     const bd = result.structuredContent;
     if (!bd) return;
 
-    setText("drilldown-title", { geo: "GEO Score Breakdown", multimodal: "Multimodal Score Breakdown", agent_ready: "Agent-Ready Score Breakdown" }[dimension] || "Breakdown");
+    setText("drilldown-title", { geo: "GEO Score Breakdown", multimodal: "Multimodal Score Breakdown", agent_ready: "Agent-Ready Score Breakdown", cwv: "Core Web Vitals Breakdown", technical_seo: "Technical SEO Breakdown", on_page_seo: "On-Page SEO Breakdown", mobile_perf: "Mobile & Performance Breakdown" }[dimension] || "Breakdown");
     setText("drilldown-passed", String(bd.passed));
     setText("drilldown-failed", String(bd.failed));
     setText("drilldown-total", String(bd.total));
@@ -415,7 +437,7 @@ function bindEvents() {
   });
   document.getElementById("drilldown-close")?.addEventListener("click", () => hide("drilldown-panel"));
   document.getElementById("drilldown-learn")?.addEventListener("click", () => {
-    const labels: Record<string, string> = { geo: "GEO (Generative Engine Optimization)", multimodal: "Multimodal readiness", agent_ready: "Agent-Ready infrastructure" };
+    const labels: Record<string, string> = { geo: "GEO (Generative Engine Optimization)", multimodal: "Multimodal readiness", agent_ready: "Agent-Ready infrastructure", cwv: "Core Web Vitals", technical_seo: "Technical SEO", on_page_seo: "On-Page SEO", mobile_perf: "Mobile & Performance" };
     app.sendMessage({ role: "user", content: [{ type: "text", text: `Explain the ${labels[activeDrilldown] || activeDrilldown} score breakdown for ${currentUrl} and what I should prioritize fixing first.` }] });
   });
 
@@ -435,7 +457,7 @@ function bindEvents() {
   // Share results
   document.getElementById("btn-share")?.addEventListener("click", () => {
     const sc = scanData?.scores;
-    app.sendMessage({ role: "user", content: [{ type: "text", text: `Share a summary of the AI Visibility scan for ${currentUrl}: Combined ${sc?.combined?.overall}/100 (${sc?.combined?.grade}), AI Visibility ${sc?.ai_visibility?.overall}/100, Marketing Health ${sc?.marketing_health?.overall}/100. ${scanData?.findings_summary?.p0 || 0} critical findings.` }] });
+    app.sendMessage({ role: "user", content: [{ type: "text", text: `Share a summary of the AI Visibility scan for ${currentUrl}: Forge Score ${sc?.forge_score?.overall || sc?.combined?.overall}/100 (${sc?.forge_score?.grade || sc?.combined?.grade}), AI Visibility ${sc?.ai_visibility?.overall}/100, SEO Health ${sc?.seo_health?.overall || '--'}/100, Marketing Health ${sc?.marketing_health?.overall}/100. ${scanData?.findings_summary?.p0 || 0} critical findings.` }] });
   });
 
   // Commerce modal
@@ -507,9 +529,11 @@ function buildReport(): string {
   let report = `# AI Visibility Scan Report: ${scanData.client?.name}\n`;
   report += `URL: ${scanData.client?.url}\nDate: ${scanData.client?.audit_date}\n\n`;
   report += `## Scores\n`;
-  report += `- Combined: ${s?.combined?.overall}/100 (${s?.combined?.grade})\n`;
+  report += `- Forge Score: ${s?.forge_score?.overall || s?.combined?.overall}/100 (${s?.forge_score?.grade || s?.combined?.grade})\n`;
   report += `- AI Visibility: ${s?.ai_visibility?.overall}/100 (${s?.ai_visibility?.grade})\n`;
   report += `  - GEO: ${s?.ai_visibility?.geo}\n  - Multimodal: ${s?.ai_visibility?.multimodal}\n  - Agent-Ready: ${s?.ai_visibility?.agent_ready}\n`;
+  report += `- SEO Health: ${s?.seo_health?.overall || '--'}/100 (${s?.seo_health?.grade || '--'})\n`;
+  report += `  - Core Web Vitals: ${s?.seo_health?.sub_scores?.cwv || '--'}\n  - Technical SEO: ${s?.seo_health?.sub_scores?.technical || '--'}\n  - On-Page SEO: ${s?.seo_health?.sub_scores?.on_page || '--'}\n  - Mobile & Perf: ${s?.seo_health?.sub_scores?.mobile_perf || '--'}\n`;
   report += `- Marketing Health: ${s?.marketing_health?.overall}/100 (${s?.marketing_health?.grade})\n\n`;
   report += `## Findings\n- Critical: ${f?.p0}\n- Important: ${f?.p1}\n- Nice-to-have: ${f?.p2}\n\n`;
   report += `## Revenue Impact\n$${scanData.revenue_impact?.monthly_low?.toLocaleString()}-$${scanData.revenue_impact?.monthly_high?.toLocaleString()}/mo\n`;

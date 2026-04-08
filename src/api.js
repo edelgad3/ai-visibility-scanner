@@ -47,8 +47,14 @@ function gateResultsByTier(fullResults, tier) {
     gated.scores.marketing_health = {
       overall: gated.scores.marketing_health.overall,
       grade: gated.scores.marketing_health.grade,
-      // Hide dimension breakdown
     };
+    // SEO Health: show overall + grade only
+    if (gated.scores.seo_health) {
+      gated.scores.seo_health = {
+        overall: gated.scores.seo_health.overall,
+        grade: gated.scores.seo_health.grade,
+      };
+    }
 
     // Only show P0 findings (critical) — rest are upgrade incentive
     const p1Count = gated.findings.p1.length;
@@ -88,8 +94,20 @@ function gateResultsByTier(fullResults, tier) {
       overall: gated.scores.marketing_health.overall,
       grade: gated.scores.marketing_health.grade,
       dimensions: gated.scores.marketing_health.dimensions,
-      // Full marketing health visible at forge tier
     };
+
+    // SEO Health: show sub-scores + homepage CWV, hide per-page details and lighthouse raw
+    if (gated.scores.seo_health) {
+      gated.scores.seo_health = {
+        overall: gated.scores.seo_health.overall,
+        grade: gated.scores.seo_health.grade,
+        sub_scores: gated.scores.seo_health.sub_scores,
+        core_web_vitals: gated.scores.seo_health.core_web_vitals,
+        broken_link_count: gated.scores.seo_health.broken_link_count,
+        pagespeed_available: gated.scores.seo_health.pagespeed_available,
+        // Hide lighthouse raw scores (diagnostic only)
+      };
+    }
 
     // Show all findings but hide revenue impact on P2
     gated.findings.p2 = gated.findings.p2.map(f => {

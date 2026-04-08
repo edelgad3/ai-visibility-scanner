@@ -85,6 +85,9 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true, br
   const scores = scoreMarketingPage($js, jsHtml);
   const overall = Math.round(((scores.seo + scores.cta + scores.trust + scores.tracking) / 4) * 10) / 10;
 
+  // 3b. SEO Details (quality/length data for SEO Health scoring)
+  const seoDetails = extractSeoDetails($js, jsHtml, url);
+
   // 4. JS Diff (Puppeteer-exclusive evidence)
   const jsDiff = computeJsDiff($raw, $js, rawHtml, jsHtml);
 
@@ -123,6 +126,7 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true, br
     response_time_ms: responseTime,
     scores,
     overall,
+    seo_details: seoDetails,
     js_diff: jsDiff,
     extracted,
     _internalLinks: internalLinks, // Used by index.js for subpage discovery, stripped from output
@@ -200,6 +204,135 @@ function scoreMarketingPage($, html) {
   tracking = Math.min(10, tracking);
 
   return { seo, cta, trust, tracking };
+}
+
+
+/**
+ * Extract detailed SEO signals for the SEO Health score.
+ * Runs alongside scoreMarketingPage — provides quality/length data, not just presence.
+ */
+function extractSeoDetails($, html, url) {
+  // Title tag
+  const titleText = $('title').text().trim();
+  const titleLength = titleText.length;
+  const titleQuality = !titleText ? 'missing' : titleLength < 30 ? 'short' : titleLength > 60 ? 'long' : 'good';
+
+  // Meta description
+  const descText = ($('meta[name="description"]').attr('content') || '').trim();
+  const descLength = descText.length;
+  const descQuality = !descText ? 'missing' : descLength < 120 ? 'short' : descLength > 160 ? 'long' : 'good';
+
+  // H1 analysis
+  const h1Elements = $('h1');
+  const h1Count = h1Elements.length;
+  const h1Text = h1Elements.first().text().trim();
+
+  // Heading hierarchy (H1 > H2 > H3 in proper order)
+  const headings = [];
+  $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+    headings.push(parseInt($(el).prop('tagName').replace('H', ''), 10));
+  });
+  let hierarchyValid = true;
+  for (let i = 1; i < headings.length; i++) {
+    if (headings[i] > headings[i - 1] + 1) { hierarchyValid = false; break; }
+  }
+
+  // Image analysis
+  const totalImages = $('img').length;
+  const imagesWithAlt = $('img[alt]').filter((_, el) => $(el).attr('alt').trim().length > 0).length;
+  const altCoverage = totalImages > 0 ? Math.round((imagesWithAlt / totalImages) * 100) : 100;
+  const imagesWithDimensions = $('img[width][height]').length;
+  const imagesLazyLoaded = $('img[loading="lazy"]').length;
+
+  // Structured data count
+  const schemaCount = $('script[type="application/ld+json"]').length;
+
+  // OG tag completeness
+  const ogTags = {
+    title: !!$('meta[property="og:title"]').attr('content'),
+    description: !!$('meta[property="og:description"]').attr('content'),
+    image: !!$('meta[property="og:image"]').attr('content'),
+    url: !!$('meta[property="og:url"]').attr('content'),
+    type: !!$('meta[property="og:type"]').attr('content'),
+  };
+  const ogComplete = Object.values(ogTags).filter(Boolean).length;
+
+  // Canonical
+  const canonical = $('link[rel="canonical"]').attr('href') || null;
+
+  // Viewport
+  const hasViewport = $('meta[name="viewport"]').length > 0;
+
+  // Internal links on this page
+  const internalLinkUrls = [];
+  try {
+    const baseUrl = new URL(url);
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return;
+      try {
+        const resolved = new URL(href, url);
+        if (resolved.hostname === baseUrl.hostname) {
+          internalLinkUrls.push(resolved.href);
+        }
+      } catch {}
+    });
+  } catch {}
+
+  return {
+    title: { text: titleText, length: titleLength, quality: titleQuality },
+    description: { text: descText, length: descLength, quality: descQuality },
+    h1: { count: h1Count, text: h1Text },
+    heading_hierarchy_valid: hierarchyValid,
+    images: {
+      total: totalImages,
+      with_alt: imagesWithAlt,
+      alt_coverage_pct: altCoverage,
+      with_dimensions: imagesWithDimensions,
+      lazy_loaded: imagesLazyLoaded,
+    },
+    schema_count: schemaCount,
+    og_tags: ogTags,
+    og_complete: ogComplete,
+    canonical,
+    has_viewport: hasViewport,
+    internal_link_count: internalLinkUrls.length,
+    _internal_link_urls: internalLinkUrls, // Used for broken link checking, stripped from output
+  };
+}
+
+
+/**
+ * Check for broken links on a page (HEAD requests, max 50 links, 3s timeout each).
+ * Returns array of { url, status_code } for non-200 responses.
+ */
+async function checkBrokenLinks(linkUrls, maxLinks = 50) {
+  const unique = [...new Set(linkUrls)].slice(0, maxLinks);
+  if (unique.length === 0) return [];
+
+  const broken = [];
+  const results = await Promise.allSettled(
+    unique.map(async (linkUrl) => {
+      try {
+        const resp = await axios.head(linkUrl, {
+          timeout: 3000,
+          validateStatus: () => true,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ForgeScanner/2.0)' },
+          maxRedirects: 5,
+        });
+        if (resp.status >= 400) {
+          broken.push({ url: linkUrl, status_code: resp.status });
+        }
+        return { url: linkUrl, status: resp.status };
+      } catch {
+        // Timeout or connection error — count as potentially broken
+        broken.push({ url: linkUrl, status_code: 0 });
+        return { url: linkUrl, status: 0 };
+      }
+    })
+  );
+
+  return broken;
 }
 
 
@@ -448,4 +581,4 @@ function discoverSubpages(internalLinks, maxPages = 5) {
   return found;
 }
 
-module.exports = { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages };
+module.exports = { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages, checkBrokenLinks, extractSeoDetails };

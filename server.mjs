@@ -22,7 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Import existing scanning modules (CommonJS)
 const { probeEndpoints } = require("./src/endpoints.js");
-const { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages } = require("./src/dom-analyzer.js");
+const { analyzePage, closeBrowser, createBrowser, releaseBrowser, discoverSubpages, checkBrokenLinks } = require("./src/dom-analyzer.js");
 const {
   computeScores,
   getGrade,
@@ -30,7 +30,12 @@ const {
   calculateMarketingHealth,
   generateMarketingFindings,
   getScoreBreakdown,
+  calculateSeoHealth,
+  calculateForgeScore,
+  generateSeoFindings,
+  getSeoScoreBreakdown,
 } = require("./src/scoring.js");
+const { fetchPageSpeedData } = require("./src/pagespeed.js");
 
 // Agency multi-tenant module
 const {
@@ -157,16 +162,25 @@ async function performScan(url, maxPages = 5, industry = "general") {
   // Each scan gets its own browser instance — no shared singleton, no race conditions
   const browser = await createBrowser();
   try {
+    // Run homepage analysis + PageSpeed API in parallel (zero extra latency)
     let homepageAnalysis;
+    let pageSpeedData = null;
     try {
-      homepageAnalysis = await analyzePage(url, "homepage", true, browser);
+      const [homeResult, psiResult] = await Promise.all([
+        analyzePage(url, "homepage", true, browser),
+        fetchPageSpeedData(url).catch(err => {
+          console.error(`PageSpeed API failed: ${err.message}`);
+          return null;
+        }),
+      ]);
+      homepageAnalysis = homeResult;
+      pageSpeedData = psiResult;
     } catch (homeErr) {
       console.error(`Homepage analysis failed for ${url}:`, homeErr.message);
-      // Return partial results with what endpoint probes found
       homepageAnalysis = {
         url, type: "homepage", status_code: 0, response_time_ms: 0,
         extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {} },
-        scores: {}, overall: 0, js_diff: null, _internalLinks: [],
+        scores: {}, overall: 0, seo_details: null, js_diff: null, _internalLinks: [],
       };
     }
 
@@ -197,19 +211,31 @@ async function performScan(url, maxPages = 5, industry = "general") {
 
     const aiScores = computeScores(checks);
 
-    const allPages = [homepageAnalysis, ...subpageResults].map((p) => ({
+    // Check broken links on homepage (async, non-blocking for subpages)
+    const allRawPages = [homepageAnalysis, ...subpageResults];
+    try {
+      const homepageLinks = homepageAnalysis.seo_details?._internal_link_urls || [];
+      const brokenLinks = await checkBrokenLinks(homepageLinks, 50);
+      homepageAnalysis._broken_links = brokenLinks;
+    } catch { homepageAnalysis._broken_links = []; }
+
+    const allPages = allRawPages.map((p) => ({
       url: p.url,
       type: p.type,
       status_code: p.status_code,
       response_time_ms: p.response_time_ms,
       scores: p.scores,
       overall: p.overall,
+      seo_details: p.seo_details || null,
+      _broken_links: p._broken_links || [],
       js_diff: p.js_diff,
     }));
 
     const marketingHealth = calculateMarketingHealth(allPages, checks);
+    const seoHealth = calculateSeoHealth(allPages, checks, pageSpeedData);
     const aiFindings = generateFindings(checks);
     const marketingFindings = generateMarketingFindings(marketingHealth, checks);
+    const seoFindings = generateSeoFindings(seoHealth, allPages, pageSpeedData);
 
     for (const mf of marketingFindings) {
       const entry = {
@@ -226,6 +252,11 @@ async function performScan(url, maxPages = 5, industry = "general") {
       else aiFindings.p2.push(entry);
     }
 
+    // Merge SEO findings into main findings
+    for (const priority of ["p0", "p1", "p2"]) {
+      aiFindings[priority].push(...(seoFindings[priority] || []));
+    }
+
     const recommendations = [];
     for (const priority of ["p0", "p1", "p2"]) {
       for (const finding of aiFindings[priority]) {
@@ -233,7 +264,8 @@ async function performScan(url, maxPages = 5, industry = "general") {
       }
     }
 
-    const combinedOverall = Math.round(((aiScores.overall * 0.5) + (marketingHealth.overall * 0.5)) * 10) / 10;
+    // Forge Score (proprietary composite — replaces old 50/50 combined)
+    const forgeScoreOverall = calculateForgeScore(aiScores.overall, seoHealth.overall, marketingHealth.overall);
 
     const revenueImpact = {
       monthly_low: recommendations.reduce((s, r) => s + (r.revenue_impact?.monthly_estimate_low || 0), 0),
@@ -243,6 +275,23 @@ async function performScan(url, maxPages = 5, industry = "general") {
 
     let clientName = "";
     try { clientName = new URL(url).hostname.replace("www.", ""); } catch { clientName = url; }
+
+    // Strip internal-only fields from page output
+    const pagesOutput = allPages.map(({ _broken_links, seo_details, ...rest }) => ({
+      ...rest,
+      seo_details: seo_details ? {
+        title: seo_details.title,
+        description: seo_details.description,
+        h1: seo_details.h1,
+        heading_hierarchy_valid: seo_details.heading_hierarchy_valid,
+        images: seo_details.images,
+        schema_count: seo_details.schema_count,
+        og_complete: seo_details.og_complete,
+        canonical: seo_details.canonical,
+        has_viewport: seo_details.has_viewport,
+        internal_link_count: seo_details.internal_link_count,
+      } : null,
+    }));
 
     return {
       client: { name: clientName, url, industry, audit_date: new Date().toISOString().split("T")[0] },
@@ -254,11 +303,18 @@ async function performScan(url, maxPages = 5, industry = "general") {
           agent_ready: aiScores.agentReady,
           grade: aiScores.grade,
         },
+        seo_health: seoHealth,
         marketing_health: marketingHealth,
-        combined: { overall: combinedOverall, grade: getGrade(combinedOverall) },
+        forge_score: {
+          overall: forgeScoreOverall,
+          grade: getGrade(forgeScoreOverall),
+          weights: { ai_visibility: 0.45, seo_health: 0.25, marketing_health: 0.30 },
+        },
+        // Backward compatibility alias
+        combined: { overall: forgeScoreOverall, grade: getGrade(forgeScoreOverall) },
       },
       findings: aiFindings,
-      pages_analyzed: allPages,
+      pages_analyzed: pagesOutput,
       recommendations,
       revenue_impact: revenueImpact,
       checks,
@@ -280,10 +336,12 @@ function buildScanResponse(results) {
       type: "text",
       text: [
         `Scanned ${results.client.name} (${results.client.url})`,
+        `Forge Score: ${results.scores.forge_score.overall}/100 (${results.scores.forge_score.grade})`,
         `AI Visibility: ${results.scores.ai_visibility.overall}/100 (${results.scores.ai_visibility.grade})`,
         `  GEO: ${results.scores.ai_visibility.geo} | Multimodal: ${results.scores.ai_visibility.multimodal} | Agent-Ready: ${results.scores.ai_visibility.agent_ready}`,
+        `SEO Health: ${results.scores.seo_health.overall}/100 (${results.scores.seo_health.grade})`,
+        `  CWV: ${results.scores.seo_health.sub_scores.cwv} | Technical: ${results.scores.seo_health.sub_scores.technical} | On-Page: ${results.scores.seo_health.sub_scores.on_page} | Mobile: ${results.scores.seo_health.sub_scores.mobile_perf}`,
         `Marketing Health: ${results.scores.marketing_health.overall}/100 (${results.scores.marketing_health.grade})`,
-        `Combined: ${results.scores.combined.overall}/100 (${results.scores.combined.grade})`,
         `Findings: ${results.findings.p0.length} critical, ${results.findings.p1.length} important, ${results.findings.p2.length} nice-to-have`,
         `Revenue Impact: $${results.revenue_impact.monthly_low.toLocaleString()}-$${results.revenue_impact.monthly_high.toLocaleString()}/mo`,
         `Pages scanned: ${results.metadata.pages_scanned} in ${(results.metadata.scan_duration_ms / 1000).toFixed(1)}s`,

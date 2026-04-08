@@ -438,4 +438,341 @@ function getScoreBreakdown(dimension, checks) {
   });
 }
 
-module.exports = { computeScores, getGrade, generateFindings, calculateMarketingHealth, generateMarketingFindings, getScoreBreakdown };
+// ── SEO Health Score (0-100) ──
+// 4 sub-scores: Core Web Vitals (30%), Technical SEO (25%), On-Page SEO (25%), Mobile & Performance (20%)
+
+function calculateSeoHealth(pagesAnalyzed, checks, pageSpeedData) {
+  // ── Sub-score 1: Core Web Vitals (0-100, weight 0.30) ──
+  let cwv = 50; // default if PageSpeed unavailable
+  if (pageSpeedData?.core_web_vitals) {
+    const v = pageSpeedData.core_web_vitals;
+    let pts = 0;
+    // LCP (40 points)
+    if (v.lcp_ms != null) {
+      pts += v.lcp_ms <= 2500 ? 40 : v.lcp_ms <= 4000 ? 20 : 0;
+    } else { pts += 20; } // neutral if missing
+    // CLS (30 points)
+    if (v.cls != null) {
+      pts += v.cls <= 0.1 ? 30 : v.cls <= 0.25 ? 15 : 0;
+    } else { pts += 15; }
+    // INP (30 points)
+    if (v.inp_ms != null) {
+      pts += v.inp_ms <= 200 ? 30 : v.inp_ms <= 500 ? 15 : 0;
+    } else { pts += 15; }
+    cwv = Math.min(100, pts);
+  }
+
+  // ── Sub-score 2: Technical SEO (0-100, weight 0.25) ──
+  let technical = 0;
+  if (checks.sitemap?.exists) technical += 15;
+  if (checks.robots?.exists) technical += 10;
+  if (checks.robots?.ai_crawlers_mentioned) technical += 5; // robots references sitemap
+  const hasCanonical = pagesAnalyzed.some(p => p.seo_details?.canonical);
+  if (hasCanonical) technical += 10;
+  // Broken links
+  const brokenCount = (pagesAnalyzed || []).reduce((sum, p) => sum + (p._broken_links?.length || 0), 0);
+  technical += brokenCount === 0 ? 20 : brokenCount <= 5 ? 10 : 0;
+  // HTTPS
+  const homepageUrl = pagesAnalyzed[0]?.url || '';
+  if (homepageUrl.startsWith('https://')) technical += 10;
+  // Response time
+  const avgResponseTime = pagesAnalyzed.reduce((s, p) => s + (p.response_time_ms || 0), 0) / (pagesAnalyzed.length || 1);
+  if (avgResponseTime < 2000) technical += 10;
+  else if (avgResponseTime < 4000) technical += 5;
+  // Sitemap URL count
+  if (checks.sitemap?.url_count > 10) technical += 5;
+  // Redirect check (homepage should not redirect excessively)
+  technical += 15; // Base points — deducted if redirect chains found in future
+  technical = Math.min(100, technical);
+
+  // ── Sub-score 3: On-Page SEO (0-100, weight 0.25) ──
+  const pageScores = pagesAnalyzed.map(p => {
+    const d = p.seo_details;
+    if (!d) return 50; // neutral if no data
+    let s = 0;
+    // Title (20 pts)
+    s += d.title.quality === 'good' ? 20 : d.title.quality === 'missing' ? 0 : 10;
+    // Description (20 pts)
+    s += d.description.quality === 'good' ? 20 : d.description.quality === 'missing' ? 0 : 10;
+    // H1 (10 pts)
+    s += d.h1.count === 1 ? 10 : d.h1.count > 1 ? 3 : 0;
+    // Heading hierarchy (10 pts)
+    s += d.heading_hierarchy_valid ? 10 : 0;
+    // Alt text (15 pts)
+    s += d.images.alt_coverage_pct >= 80 ? 15 : d.images.alt_coverage_pct >= 50 ? 8 : 0;
+    // Structured data (10 pts)
+    s += d.schema_count >= 1 ? 10 : 0;
+    // OG tags (10 pts)
+    s += d.og_complete >= 4 ? 10 : d.og_complete >= 2 ? 5 : 0;
+    // Duplicate detection bonus (5 pts) — checked at aggregate level below
+    return Math.min(100, s);
+  });
+  let onPage = pageScores.reduce((a, b) => a + b, 0) / (pageScores.length || 1);
+  // Duplicate title check
+  const titles = pagesAnalyzed.map(p => p.seo_details?.title?.text).filter(Boolean);
+  const uniqueTitles = new Set(titles);
+  if (titles.length > 1 && uniqueTitles.size === titles.length) onPage = Math.min(100, onPage + 5);
+  onPage = Math.round(onPage * 10) / 10;
+
+  // ── Sub-score 4: Mobile & Performance (0-100, weight 0.20) ──
+  let mobilePerf = 50; // default
+  if (pageSpeedData?.lighthouse) {
+    const lh = pageSpeedData.lighthouse;
+    mobilePerf = Math.round(
+      (lh.performance || 0) * 0.40 +
+      (lh.seo || 0) * 0.30 +
+      (lh.accessibility || 0) * 0.15 +
+      (lh.best_practices || 0) * 0.15
+    );
+  } else {
+    // Fallback: viewport + responsive images
+    const hasViewport = pagesAnalyzed.some(p => p.seo_details?.has_viewport);
+    mobilePerf = hasViewport ? 60 : 30;
+  }
+
+  // ── Overall SEO Health ──
+  const overall = Math.round(((cwv * 0.30) + (technical * 0.25) + (onPage * 0.25) + (mobilePerf * 0.20)) * 10) / 10;
+
+  return {
+    overall,
+    grade: getGrade(overall),
+    sub_scores: {
+      cwv: Math.round(cwv),
+      technical: Math.round(technical),
+      on_page: Math.round(onPage),
+      mobile_perf: Math.round(mobilePerf),
+    },
+    core_web_vitals: pageSpeedData?.core_web_vitals || null,
+    lighthouse: pageSpeedData?.lighthouse || null,
+    broken_link_count: brokenCount,
+    pagespeed_available: !!pageSpeedData,
+  };
+}
+
+// ── Forge Score (proprietary composite) ──
+
+function calculateForgeScore(aiVisibilityOverall, seoHealthOverall, marketingHealthOverall) {
+  return Math.round(((aiVisibilityOverall * 0.45) + (marketingHealthOverall * 0.30) + (seoHealthOverall * 0.25)) * 10) / 10;
+}
+
+// ── SEO Findings ──
+
+function generateSeoFindings(seoHealth, pagesAnalyzed, pageSpeedData) {
+  const findings = { p0: [], p1: [], p2: [] };
+  const cwv = pageSpeedData?.core_web_vitals || {};
+  const lh = pageSpeedData?.lighthouse || {};
+
+  // ── P0: Critical ──
+  if (cwv.lcp_ms && cwv.lcp_ms > 4000) {
+    findings.p0.push({
+      action: "Fix critically slow page load (LCP > 4 seconds)",
+      detail: `Largest Contentful Paint is ${(cwv.lcp_ms / 1000).toFixed(1)}s. Google recommends under 2.5s. This directly impacts rankings, AI crawlability, and user experience.`,
+      impact: "high", effort: "high", source: "seo_health",
+      revenue_impact: { monthly_estimate_low: 500, monthly_estimate_mid: 2000, monthly_estimate_high: 5000 },
+    });
+  }
+
+  const pagesNoDesc = pagesAnalyzed.filter(p => p.seo_details?.description?.quality === 'missing');
+  if (pagesNoDesc.length > 0) {
+    findings.p0.push({
+      action: "Add meta descriptions to all pages",
+      detail: `${pagesNoDesc.length} page(s) have no meta description. Search engines and AI systems use this as the primary summary of your page content.`,
+      impact: "high", effort: "low", source: "seo_health",
+      revenue_impact: { monthly_estimate_low: 300, monthly_estimate_mid: 1000, monthly_estimate_high: 2500 },
+    });
+  }
+
+  if (seoHealth.broken_link_count > 5) {
+    findings.p0.push({
+      action: "Fix broken links across your site",
+      detail: `${seoHealth.broken_link_count} broken link(s) detected. Broken links damage crawlability, user experience, and reduce trust signals for both search engines and AI systems.`,
+      impact: "high", effort: "medium", source: "seo_health",
+      revenue_impact: { monthly_estimate_low: 200, monthly_estimate_mid: 800, monthly_estimate_high: 2000 },
+    });
+  }
+
+  if (lh.performance && lh.performance < 30) {
+    findings.p0.push({
+      action: "Address critical performance issues",
+      detail: `Lighthouse performance score is ${lh.performance}/100. Scores below 30 indicate severe issues affecting page load, interactivity, and visual stability.`,
+      impact: "high", effort: "high", source: "seo_health",
+    });
+  }
+
+  // ── P1: Important ──
+  const badTitles = pagesAnalyzed.filter(p => {
+    const q = p.seo_details?.title?.quality;
+    return q === 'short' || q === 'long' || q === 'missing';
+  });
+  if (badTitles.length > 0) {
+    const issues = badTitles.map(p => `${p.seo_details.title.quality} (${p.seo_details.title.length} chars)`);
+    findings.p1.push({
+      action: "Optimize title tag length (50-60 characters)",
+      detail: `${badTitles.length} page(s) have suboptimal title tags: ${issues.slice(0, 3).join(', ')}${badTitles.length > 3 ? '...' : ''}. Ideal length is 50-60 characters for maximum visibility.`,
+      impact: "medium", effort: "low", source: "seo_health",
+    });
+  }
+
+  const multiH1 = pagesAnalyzed.filter(p => (p.seo_details?.h1?.count || 0) > 1);
+  if (multiH1.length > 0) {
+    findings.p1.push({
+      action: "Use exactly one H1 tag per page",
+      detail: `${multiH1.length} page(s) have multiple H1 tags. Each page should have a single H1 that clearly describes its content.`,
+      impact: "medium", effort: "low", source: "seo_health",
+    });
+  }
+
+  const noH1 = pagesAnalyzed.filter(p => (p.seo_details?.h1?.count || 0) === 0);
+  if (noH1.length > 0) {
+    findings.p1.push({
+      action: "Add H1 heading to all pages",
+      detail: `${noH1.length} page(s) are missing an H1 tag. The H1 is the primary heading signal for both search engines and AI systems.`,
+      impact: "medium", effort: "low", source: "seo_health",
+    });
+  }
+
+  if (cwv.cls != null && cwv.cls > 0.25) {
+    findings.p1.push({
+      action: "Reduce Cumulative Layout Shift (CLS > 0.25)",
+      detail: `CLS is ${cwv.cls.toFixed(3)}. Elements are shifting unexpectedly during page load, degrading user experience. Common fixes: set image dimensions, avoid dynamically injected content above the fold.`,
+      impact: "medium", effort: "medium", source: "seo_health",
+    });
+  }
+
+  if (cwv.inp_ms && cwv.inp_ms > 500) {
+    findings.p1.push({
+      action: "Improve Interaction to Next Paint (INP > 500ms)",
+      detail: `INP is ${cwv.inp_ms}ms. User interactions feel sluggish. Optimize JavaScript execution and reduce main thread blocking.`,
+      impact: "medium", effort: "high", source: "seo_health",
+    });
+  }
+
+  // Duplicate titles
+  const titles = pagesAnalyzed.map(p => p.seo_details?.title?.text).filter(Boolean);
+  const titleCounts = {};
+  titles.forEach(t => { titleCounts[t] = (titleCounts[t] || 0) + 1; });
+  const dupes = Object.entries(titleCounts).filter(([, c]) => c > 1);
+  if (dupes.length > 0) {
+    findings.p1.push({
+      action: "Fix duplicate title tags across pages",
+      detail: `${dupes.length} title(s) are used on multiple pages. Each page should have a unique title to avoid confusing search engines and AI systems.`,
+      impact: "medium", effort: "low", source: "seo_health",
+    });
+  }
+
+  if (seoHealth.broken_link_count > 0 && seoHealth.broken_link_count <= 5) {
+    findings.p1.push({
+      action: "Fix broken links on your site",
+      detail: `${seoHealth.broken_link_count} broken link(s) detected. Fix or remove these to improve crawlability.`,
+      impact: "medium", effort: "low", source: "seo_health",
+    });
+  }
+
+  // ── P2: Nice-to-have ──
+  const lowAlt = pagesAnalyzed.filter(p => {
+    const cov = p.seo_details?.images?.alt_coverage_pct;
+    return cov != null && cov < 80 && p.seo_details?.images?.total > 0;
+  });
+  if (lowAlt.length > 0) {
+    findings.p2.push({
+      action: "Add alt text to all images",
+      detail: `${lowAlt.length} page(s) have less than 80% image alt text coverage. Alt text improves accessibility and provides context to search engines and AI systems.`,
+      impact: "low", effort: "low", source: "seo_health",
+    });
+  }
+
+  const noLazy = pagesAnalyzed.filter(p => {
+    const d = p.seo_details?.images;
+    return d && d.total > 3 && d.lazy_loaded === 0;
+  });
+  if (noLazy.length > 0) {
+    findings.p2.push({
+      action: "Add lazy loading to below-fold images",
+      detail: `${noLazy.length} page(s) have images without lazy loading. Add loading=\"lazy\" to improve initial page load speed.`,
+      impact: "low", effort: "low", source: "seo_health",
+    });
+  }
+
+  const noDimensions = pagesAnalyzed.filter(p => {
+    const d = p.seo_details?.images;
+    return d && d.total > 0 && d.with_dimensions < d.total;
+  });
+  if (noDimensions.length > 0) {
+    findings.p2.push({
+      action: "Add width and height attributes to images",
+      detail: `Images without explicit dimensions cause layout shifts (CLS). Add width and height attributes or use CSS aspect-ratio.`,
+      impact: "low", effort: "low", source: "seo_health",
+    });
+  }
+
+  const badHierarchy = pagesAnalyzed.filter(p => p.seo_details && !p.seo_details.heading_hierarchy_valid);
+  if (badHierarchy.length > 0) {
+    findings.p2.push({
+      action: "Fix heading hierarchy (H1 > H2 > H3)",
+      detail: `${badHierarchy.length} page(s) skip heading levels (e.g., H1 to H3 without H2). Proper hierarchy helps both accessibility and content structure signaling.`,
+      impact: "low", effort: "low", source: "seo_health",
+    });
+  }
+
+  return findings;
+}
+
+// ── SEO Score Breakdown Rules (for drill-down UI) ──
+
+const SEO_SCORE_RULES = {
+  cwv: [
+    { name: "LCP ≤ 2.5s", desc: "Largest Contentful Paint under 2.5 seconds", points: 40, check: (d) => d?.core_web_vitals?.lcp_ms <= 2500, altCheck: (d) => d?.core_web_vitals?.lcp_ms <= 4000, altPoints: 20 },
+    { name: "CLS ≤ 0.1", desc: "Cumulative Layout Shift under 0.1", points: 30, check: (d) => d?.core_web_vitals?.cls <= 0.1, altCheck: (d) => d?.core_web_vitals?.cls <= 0.25, altPoints: 15 },
+    { name: "INP ≤ 200ms", desc: "Interaction to Next Paint under 200ms", points: 30, check: (d) => d?.core_web_vitals?.inp_ms <= 200, altCheck: (d) => d?.core_web_vitals?.inp_ms <= 500, altPoints: 15 },
+  ],
+  technical_seo: [
+    { name: "sitemap.xml", desc: "XML sitemap exists and is accessible", points: 15, check: (d) => d?.sitemap?.exists },
+    { name: "robots.txt", desc: "robots.txt file exists", points: 10, check: (d) => d?.robots?.exists },
+    { name: "Canonical tags", desc: "Canonical link tags present", points: 10, check: (d) => d?._has_canonical },
+    { name: "No broken links", desc: "No 4xx/5xx links detected", points: 20, check: (d) => (d?._broken_count || 0) === 0, altCheck: (d) => (d?._broken_count || 0) <= 5, altPoints: 10 },
+    { name: "HTTPS", desc: "Site uses HTTPS", points: 10, check: (d) => d?._is_https },
+    { name: "Fast response", desc: "Average response time under 2 seconds", points: 10, check: (d) => (d?._avg_response_ms || 9999) < 2000 },
+  ],
+  on_page_seo: [
+    { name: "Title tags", desc: "Title tags present with good length (50-60 chars)", points: 20, check: (d) => d?._title_quality === 'good' },
+    { name: "Meta descriptions", desc: "Meta descriptions present with good length", points: 20, check: (d) => d?._desc_quality === 'good' },
+    { name: "Single H1", desc: "Exactly one H1 per page", points: 10, check: (d) => d?._h1_count === 1 },
+    { name: "Alt text ≥80%", desc: "Image alt text coverage at least 80%", points: 15, check: (d) => (d?._alt_coverage || 0) >= 80 },
+    { name: "Structured data", desc: "JSON-LD structured data present", points: 10, check: (d) => (d?._schema_count || 0) >= 1 },
+    { name: "OG tags", desc: "OpenGraph meta tags complete", points: 10, check: (d) => (d?._og_complete || 0) >= 4 },
+  ],
+  mobile_perf: [
+    { name: "Performance ≥ 50", desc: "Lighthouse performance score at least 50", points: 40, check: (d) => (d?.lighthouse?.performance || 0) >= 50 },
+    { name: "SEO ≥ 80", desc: "Lighthouse SEO score at least 80", points: 30, check: (d) => (d?.lighthouse?.seo || 0) >= 80 },
+    { name: "Accessibility ≥ 70", desc: "Lighthouse accessibility score at least 70", points: 15, check: (d) => (d?.lighthouse?.accessibility || 0) >= 70 },
+    { name: "Best Practices ≥ 70", desc: "Lighthouse best practices score at least 70", points: 15, check: (d) => (d?.lighthouse?.best_practices || 0) >= 70 },
+  ],
+};
+
+function getSeoScoreBreakdown(dimension, seoHealth) {
+  const rules = SEO_SCORE_RULES[dimension];
+  if (!rules) return null;
+
+  const breakdown = rules.map(rule => {
+    let passed = false;
+    let awarded = 0;
+    try {
+      if (rule.check(seoHealth)) { passed = true; awarded = rule.points; }
+      else if (rule.altCheck && rule.altCheck(seoHealth)) { passed = true; awarded = rule.altPoints; }
+    } catch {}
+    return { name: rule.name, description: rule.desc, points: awarded, maxPoints: rule.points, passed };
+  });
+
+  const passed = breakdown.filter(b => b.passed).length;
+  const total = breakdown.length;
+  const max = breakdown.reduce((s, b) => s + b.maxPoints, 0);
+  const score = breakdown.reduce((s, b) => s + b.points, 0);
+
+  return { dimension, score, max, passed, failed: total - passed, total, breakdown };
+}
+
+module.exports = {
+  computeScores, getGrade, generateFindings,
+  calculateMarketingHealth, generateMarketingFindings, getScoreBreakdown,
+  calculateSeoHealth, calculateForgeScore, generateSeoFindings, getSeoScoreBreakdown,
+};

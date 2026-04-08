@@ -75,8 +75,9 @@ header { display: flex; justify-content: space-between; align-items: center; pad
 .gauge-value { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; }
 .gauge-grade { font-size: 14px; font-weight: 600; color: var(--text-muted); }
 .hero-title { font-size: 13px; color: var(--text-muted); font-weight: 600; }
-.hero-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.hero-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .score-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.seo-card { border-left: 3px solid #f59e0b; }
 .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .card-icon { font-size: 18px; }
 .card-title { font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -220,6 +221,9 @@ header { display: flex; justify-content: space-between; align-items: center; pad
 .score-bad { color: var(--danger); }
 
 /* ── Responsive ── */
+@media (max-width: 900px) {
+  .hero-cards { grid-template-columns: 1fr 1fr; }
+}
 @media (max-width: 640px) {
   .score-hero { grid-template-columns: 1fr; }
   .hero-cards { grid-template-columns: 1fr; }
