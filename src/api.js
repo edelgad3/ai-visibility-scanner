@@ -569,6 +569,7 @@ async function runScanAsync(scanId, scanRecord, performScan) {
     );
 
     const completedAt = new Date().toISOString();
+    const forgeScore = results.scores.forge_score || results.scores.combined;
     const completionUpdate = {
       status: "complete",
       results,
@@ -577,10 +578,12 @@ async function runScanAsync(scanId, scanRecord, performScan) {
         geo: results.scores.ai_visibility.geo,
         multimodal: results.scores.ai_visibility.multimodal,
         agent_ready: results.scores.ai_visibility.agent_ready,
+        seo_health: results.scores.seo_health?.overall || null,
         marketing_health: results.scores.marketing_health.overall,
-        combined: results.scores.combined.overall,
+        forge_score: forgeScore.overall,
+        combined: forgeScore.overall,
       },
-      grade: results.scores.combined.grade,
+      grade: forgeScore.grade,
       scan_duration_ms: results.metadata.scan_duration_ms,
       pages_scanned: results.metadata.pages_scanned,
       completed_at: completedAt,
@@ -595,7 +598,7 @@ async function runScanAsync(scanId, scanRecord, performScan) {
       Object.assign(scanJobs.get(scanId), completionUpdate);
     }
 
-    console.log(`Scan ${scanId} complete: ${results.scores.combined.grade} (${results.scores.combined.overall}/100) in ${results.metadata.scan_duration_ms}ms`);
+    console.log(`Scan ${scanId} complete: Forge Score ${forgeScore.grade} (${forgeScore.overall}/100) in ${results.metadata.scan_duration_ms}ms`);
 
     // Capture lead if email was provided (feeds into nurture sequence)
     if (scanRecord.email && SUPABASE_URL && SUPABASE_KEY) {
@@ -614,7 +617,7 @@ async function runScanAsync(scanId, scanRecord, performScan) {
             source: "scan_form",
             status: "new",
             lead_score: 10,
-            notes: `${scanRecord.tier} scan — grade ${results.scores.combined.grade} (${results.scores.combined.overall}/100)`,
+            notes: `${scanRecord.tier} scan — Forge Score ${forgeScore.grade} (${forgeScore.overall}/100)`,
           });
           console.log(`Lead captured from scan: ${scanRecord.email}`);
         }
