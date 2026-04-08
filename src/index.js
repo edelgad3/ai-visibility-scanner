@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { probeEndpoints } = require('./endpoints');
 const { analyzePage, closeBrowser, discoverSubpages } = require('./dom-analyzer');
-const { computeScores, getGrade, generateFindings, calculateMarketingHealth, generateMarketingFindings } = require('./scoring');
+const { computeScores, getGrade, generateFindings, calculateMarketingHealth, generateMarketingFindings, calculateProtocolSecurity, generateSecurityFindings } = require('./scoring');
 
 program
   .requiredOption('--url <url>', 'Target URL')
@@ -98,6 +98,7 @@ async function run() {
       aeo: homepageAnalysis.extracted.aeo,
       digital_assets: homepageAnalysis.extracted.digital_assets,
       protocol_signals: homepageAnalysis.extracted.protocol_signals,
+      security_signals: homepageAnalysis.extracted.security_signals,
     };
 
     // AI Visibility scores
@@ -117,9 +118,13 @@ async function run() {
     // Marketing Health (6-dimension scoring from all pages)
     const marketingHealth = calculateMarketingHealth(allPages, checks);
 
+    // Protocol Security (7 attack vectors)
+    const protocolSecurity = calculateProtocolSecurity(checks);
+
     // Findings
     const aiFindings = generateFindings(checks);
     const marketingFindings = generateMarketingFindings(marketingHealth, checks);
+    const securityFindings = generateSecurityFindings(protocolSecurity, checks);
 
     // Merge marketing findings into priority buckets
     for (const mf of marketingFindings) {
@@ -135,6 +140,11 @@ async function run() {
       if (mf.priority === 'critical') aiFindings.p0.push(entry);
       else if (mf.priority === 'high') aiFindings.p1.push(entry);
       else aiFindings.p2.push(entry);
+    }
+
+    // Merge security findings
+    for (const priority of ['p0', 'p1', 'p2']) {
+      aiFindings[priority].push(...(securityFindings[priority] || []));
     }
 
     // Unified recommendations (sorted P0 → P1 → P2)
@@ -183,6 +193,7 @@ async function run() {
           checks,
         },
         marketing_health: marketingHealth,
+        protocol_security: protocolSecurity,
         combined: {
           overall: combinedOverall,
           grade: getGrade(combinedOverall),
@@ -234,6 +245,7 @@ async function run() {
     console.log(`    Agent-Ready:  ${aiScores.agentReady}`);
     console.log('');
     console.log(`  Marketing:      ${marketingHealth.overall}/100 (${marketingHealth.grade})`);
+    console.log(`  Security:       ${protocolSecurity.overall}/100 (${protocolSecurity.grade})`);
     console.log(`  Combined:       ${combinedOverall}/100 (${getGrade(combinedOverall)})`);
     console.log('');
     console.log(`  Findings:       P0=${aiFindings.p0.length}  P1=${aiFindings.p1.length}  P2=${aiFindings.p2.length}`);

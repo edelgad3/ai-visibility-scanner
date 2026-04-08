@@ -826,8 +826,248 @@ function getSeoScoreBreakdown(dimension, seoHealth) {
   return { dimension, score, max, passed, failed: total - passed, total, breakdown };
 }
 
+// ── Protocol Security Score (0-100) ──
+// 7 attack vectors: MCP poisoning, supply chain, config injection, rug pulls,
+// AgentCard spoofing, A2UI catalog poisoning, cross-layer attacks.
+
+function calculateProtocolSecurity(checks) {
+  const sec = checks.security_signals || {};
+  const headers = sec.headers || {};
+  const mcpSafety = sec.mcp_safety || {};
+  const agentCard = sec.agent_card || {};
+  const scriptSafety = sec.script_safety || {};
+
+  let score = 0;
+
+  // ── Transport Security (20 pts) ──
+  if (headers.has_hsts) score += 10;
+  if (headers.hsts_max_age >= 31536000) score += 5; // 1 year minimum
+  else if (headers.hsts_max_age >= 2592000) score += 2; // 30 days
+  if (headers.has_x_content_type_options) score += 5;
+
+  // ── Content Security Policy (20 pts) ──
+  if (headers.has_csp) score += 8;
+  if (headers.csp_has_default_src) score += 4;
+  if (headers.has_csp && !headers.csp_allows_unsafe_inline) score += 4;
+  if (headers.has_csp && !headers.csp_allows_unsafe_eval) score += 4;
+
+  // ── MCP Tool Safety (20 pts) ──
+  if (mcpSafety.tool_count > 0) {
+    // Has MCP tools — check for poisoning signals
+    if (!mcpSafety.has_unicode_obfuscation) score += 10;
+    if (!mcpSafety.has_suspicious_descriptions) score += 10;
+  } else {
+    // No MCP tools — no attack surface, full points
+    score += 20;
+  }
+
+  // ── Agent Card Verification (15 pts) ──
+  if (checks.agent_card?.exists) {
+    if (agentCard.has_signed_card) score += 15;
+    else score += 5; // Card exists but unsigned
+  } else {
+    score += 10; // No card = no spoofing surface (partial credit)
+  }
+
+  // ── Script Integrity (15 pts) ──
+  if (headers.has_x_frame_options) score += 5;
+  if (scriptSafety.sri_coverage_pct >= 80) score += 5;
+  else if (scriptSafety.sri_coverage_pct >= 40) score += 2;
+  if (!headers.is_wildcard_cors) score += 5;
+
+  // ── Cross-Layer Defense (10 pts) ──
+  if (headers.has_permissions_policy) score += 5;
+  if (headers.has_csp && headers.has_hsts && headers.has_x_frame_options) score += 5; // Defense-in-depth bonus
+
+  return {
+    overall: Math.min(100, score),
+    grade: getGrade(Math.min(100, score)),
+    sub_scores: {
+      transport_security: Math.min(20, (headers.has_hsts ? 10 : 0) + (headers.hsts_max_age >= 31536000 ? 5 : headers.hsts_max_age >= 2592000 ? 2 : 0) + (headers.has_x_content_type_options ? 5 : 0)),
+      content_security_policy: Math.min(20, (headers.has_csp ? 8 : 0) + (headers.csp_has_default_src ? 4 : 0) + (headers.has_csp && !headers.csp_allows_unsafe_inline ? 4 : 0) + (headers.has_csp && !headers.csp_allows_unsafe_eval ? 4 : 0)),
+      mcp_tool_safety: Math.min(20, mcpSafety.tool_count > 0 ? ((!mcpSafety.has_unicode_obfuscation ? 10 : 0) + (!mcpSafety.has_suspicious_descriptions ? 10 : 0)) : 20),
+      agent_card_verification: Math.min(15, checks.agent_card?.exists ? (agentCard.has_signed_card ? 15 : 5) : 10),
+      script_integrity: Math.min(15, (headers.has_x_frame_options ? 5 : 0) + (scriptSafety.sri_coverage_pct >= 80 ? 5 : scriptSafety.sri_coverage_pct >= 40 ? 2 : 0) + (!headers.is_wildcard_cors ? 5 : 0)),
+      cross_layer_defense: Math.min(10, (headers.has_permissions_policy ? 5 : 0) + (headers.has_csp && headers.has_hsts && headers.has_x_frame_options ? 5 : 0)),
+    },
+    signals: sec,
+  };
+}
+
+// ── Protocol Security Findings ──
+
+function generateSecurityFindings(protocolSecurity, checks) {
+  const findings = { p0: [], p1: [], p2: [] };
+  const sec = checks.security_signals || {};
+  const headers = sec.headers || {};
+  const mcpSafety = sec.mcp_safety || {};
+  const agentCard = sec.agent_card || {};
+  const scriptSafety = sec.script_safety || {};
+
+  // ── P0: Critical Security Issues ──
+
+  if (mcpSafety.has_unicode_obfuscation) {
+    findings.p0.push({
+      action: 'CRITICAL: MCP tool poisoning detected — Unicode obfuscation in tool descriptions',
+      detail: 'Hidden Unicode characters found in WebMCP tool descriptions. This is the #1 MCP attack vector — malicious invisible text can manipulate agent behavior. Remove all zero-width and directional override characters.',
+      impact: 'high', effort: 'low', source: 'protocol_security',
+      revenue_impact: { monthly_estimate_low: 1000, monthly_estimate_mid: 5000, monthly_estimate_high: 10000 },
+    });
+  }
+
+  if (mcpSafety.has_suspicious_descriptions) {
+    findings.p0.push({
+      action: 'CRITICAL: MCP tool descriptions contain executable patterns',
+      detail: 'Tool descriptions include eval(), function(), <script>, or javascript: patterns. AI agents may execute these as instructions. Sanitize all tool descriptions to contain only plain text.',
+      impact: 'high', effort: 'low', source: 'protocol_security',
+      revenue_impact: { monthly_estimate_low: 1000, monthly_estimate_mid: 5000, monthly_estimate_high: 10000 },
+    });
+  }
+
+  if (!headers.has_hsts) {
+    findings.p0.push({
+      action: 'Enable HSTS (Strict-Transport-Security) header',
+      detail: 'Without HSTS, agent-to-site communication can be intercepted via TLS downgrade attacks. AI agents making API calls to your site are especially vulnerable. Add: Strict-Transport-Security: max-age=31536000; includeSubDomains',
+      impact: 'high', effort: 'low', source: 'protocol_security',
+      revenue_impact: { monthly_estimate_low: 500, monthly_estimate_mid: 2000, monthly_estimate_high: 5000 },
+    });
+  }
+
+  // ── P1: Important Security Issues ──
+
+  if (!headers.has_csp) {
+    findings.p1.push({
+      action: 'Deploy Content Security Policy (CSP) header',
+      detail: 'No CSP detected. Without CSP, injected scripts can intercept MCP tool calls, exfiltrate agent-card data, and poison A2UI components. This is the primary defense against cross-layer attacks.',
+      impact: 'high', effort: 'medium', source: 'protocol_security',
+      revenue_impact: { monthly_estimate_low: 300, monthly_estimate_mid: 1500, monthly_estimate_high: 3000 },
+    });
+  } else {
+    if (headers.csp_allows_unsafe_inline) {
+      findings.p1.push({
+        action: 'Remove unsafe-inline from CSP',
+        detail: "CSP allows 'unsafe-inline' which defeats XSS protection. Inline scripts can intercept WebMCP tool registrations and poison navigator.modelContext. Use nonces or hashes instead.",
+        impact: 'high', effort: 'medium', source: 'protocol_security',
+      });
+    }
+    if (headers.csp_allows_unsafe_eval) {
+      findings.p1.push({
+        action: 'Remove unsafe-eval from CSP',
+        detail: "CSP allows 'unsafe-eval' which enables code injection attacks. Attackers can dynamically generate malicious MCP tool definitions at runtime.",
+        impact: 'high', effort: 'medium', source: 'protocol_security',
+      });
+    }
+  }
+
+  if (checks.agent_card?.exists && !agentCard.has_signed_card) {
+    findings.p1.push({
+      action: 'Sign your agent-card.json with a verifiable cryptographic signature',
+      detail: 'Your agent card is unsigned — any MITM or DNS hijack can replace it with a malicious version. Signed cards let other agents verify authenticity before trusting your capabilities.',
+      impact: 'high', effort: 'medium', source: 'protocol_security',
+      revenue_impact: { monthly_estimate_low: 200, monthly_estimate_mid: 800, monthly_estimate_high: 2000 },
+    });
+  }
+
+  if (headers.is_wildcard_cors) {
+    findings.p1.push({
+      action: 'Replace wildcard CORS (*) with explicit origin allowlist',
+      detail: 'Access-Control-Allow-Origin: * allows any origin to make authenticated requests. Malicious sites can call your agent endpoints and exfiltrate data.',
+      impact: 'high', effort: 'low', source: 'protocol_security',
+    });
+  }
+
+  if (!headers.has_x_frame_options) {
+    findings.p1.push({
+      action: 'Add X-Frame-Options header to prevent clickjacking',
+      detail: 'Without X-Frame-Options, your site can be embedded in a malicious iframe. Attackers can overlay fake A2UI components to trick agents into executing unintended actions.',
+      impact: 'medium', effort: 'low', source: 'protocol_security',
+    });
+  }
+
+  // ── P2: Security Hardening ──
+
+  if (!headers.has_x_content_type_options) {
+    findings.p2.push({
+      action: 'Add X-Content-Type-Options: nosniff header',
+      detail: 'Prevents MIME-type sniffing that can lead to script execution from mistyped content. Agents parsing your responses may be tricked into executing non-script content as code.',
+      impact: 'low', effort: 'low', source: 'protocol_security',
+    });
+  }
+
+  if (!headers.has_permissions_policy) {
+    findings.p2.push({
+      action: 'Deploy Permissions-Policy header',
+      detail: 'Restrict browser feature access (camera, microphone, geolocation) to prevent malicious iframes from accessing sensitive capabilities through embedded A2UI components.',
+      impact: 'low', effort: 'low', source: 'protocol_security',
+    });
+  }
+
+  if (scriptSafety.total_external_scripts > 0 && scriptSafety.sri_coverage_pct < 50) {
+    findings.p2.push({
+      action: `Add Subresource Integrity (SRI) to external scripts (${scriptSafety.sri_coverage_pct}% coverage)`,
+      detail: `${scriptSafety.total_external_scripts - scriptSafety.external_scripts_with_sri} external script(s) lack integrity hashes. Compromised CDNs can inject malicious code that intercepts MCP tool registrations — this is the supply chain attack vector.`,
+      impact: 'medium', effort: 'medium', source: 'protocol_security',
+    });
+  }
+
+  return findings;
+}
+
+// ── Protocol Security Score Rules (for drill-down UI) ──
+
+const SECURITY_SCORE_RULES = {
+  transport_security: [
+    { name: 'HSTS Enabled', check: (s) => s.headers?.has_hsts, points: 10, desc: 'Strict-Transport-Security header prevents TLS downgrade attacks' },
+    { name: 'HSTS 1yr+', check: (s) => s.headers?.hsts_max_age >= 31536000, points: 5, altCheck: (s) => s.headers?.hsts_max_age >= 2592000, altPoints: 2, desc: 'HSTS max-age at least 1 year for HSTS preload eligibility' },
+    { name: 'X-Content-Type-Options', check: (s) => s.headers?.has_x_content_type_options, points: 5, desc: 'Prevents MIME-type sniffing attacks' },
+  ],
+  content_security_policy: [
+    { name: 'CSP Present', check: (s) => s.headers?.has_csp, points: 8, desc: 'Content Security Policy header deployed' },
+    { name: 'default-src Defined', check: (s) => s.headers?.csp_has_default_src, points: 4, desc: 'Fallback directive for unspecified resource types' },
+    { name: 'No unsafe-inline', check: (s) => s.headers?.has_csp && !s.headers?.csp_allows_unsafe_inline, points: 4, desc: 'Inline scripts blocked (use nonces/hashes instead)' },
+    { name: 'No unsafe-eval', check: (s) => s.headers?.has_csp && !s.headers?.csp_allows_unsafe_eval, points: 4, desc: 'Dynamic code execution blocked' },
+  ],
+  mcp_tool_safety: [
+    { name: 'No Unicode Obfuscation', check: (s) => !s.mcp_safety?.has_unicode_obfuscation, points: 10, desc: 'Tool descriptions free of hidden Unicode manipulation characters' },
+    { name: 'No Executable Patterns', check: (s) => !s.mcp_safety?.has_suspicious_descriptions, points: 10, desc: 'Tool descriptions contain only safe plain text' },
+  ],
+  agent_card_verification: [
+    { name: 'Signed Agent Card', check: (s, c) => !c.agent_card?.exists || s.agent_card?.has_signed_card, points: 15, desc: 'Agent card cryptographically signed for authenticity verification' },
+  ],
+  script_integrity: [
+    { name: 'X-Frame-Options', check: (s) => s.headers?.has_x_frame_options, points: 5, desc: 'Prevents clickjacking via iframe embedding' },
+    { name: 'SRI Coverage ≥80%', check: (s) => s.script_safety?.sri_coverage_pct >= 80, points: 5, altCheck: (s) => s.script_safety?.sri_coverage_pct >= 40, altPoints: 2, desc: 'External scripts verified with integrity hashes' },
+    { name: 'No Wildcard CORS', check: (s) => !s.headers?.is_wildcard_cors, points: 5, desc: 'CORS restricted to explicit origins' },
+  ],
+  cross_layer_defense: [
+    { name: 'Permissions-Policy', check: (s) => s.headers?.has_permissions_policy, points: 5, desc: 'Browser feature access restricted' },
+    { name: 'Defense-in-Depth', check: (s) => s.headers?.has_csp && s.headers?.has_hsts && s.headers?.has_x_frame_options, points: 5, desc: 'All three core security headers deployed together' },
+  ],
+};
+
+function getSecurityScoreBreakdown(dimension, securitySignals, checks) {
+  const rules = SECURITY_SCORE_RULES[dimension];
+  if (!rules) return null;
+
+  const breakdown = rules.map(rule => {
+    let passed = false;
+    let awarded = 0;
+    try {
+      if (rule.check(securitySignals, checks)) { passed = true; awarded = rule.points; }
+      else if (rule.altCheck && rule.altCheck(securitySignals, checks)) { passed = true; awarded = rule.altPoints; }
+    } catch {}
+    return { name: rule.name, description: rule.desc, points: awarded, maxPoints: rule.points, passed };
+  });
+
+  const passed = breakdown.filter(b => b.passed).length;
+  const total = breakdown.length;
+
+  return { dimension, passed, failed: total - passed, total, breakdown };
+}
+
 module.exports = {
   computeScores, getGrade, generateFindings,
   calculateMarketingHealth, generateMarketingFindings, getScoreBreakdown,
   calculateSeoHealth, calculateForgeScore, generateSeoFindings, getSeoScoreBreakdown,
+  calculateProtocolSecurity, generateSecurityFindings, getSecurityScoreBreakdown,
 };

@@ -47,6 +47,7 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true, br
   const noJsStart = Date.now();
   let rawHtml = '';
   let rawStatus = 0;
+  let responseHeaders = {};
   try {
     const rawRes = await axios.get(url, {
       validateStatus: () => true,
@@ -55,6 +56,7 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true, br
     });
     rawStatus = rawRes.status;
     rawHtml = typeof rawRes.data === 'string' ? rawRes.data : '';
+    responseHeaders = rawRes.headers || {};
   } catch (e) {
     console.error(`  Raw fetch failed for ${url}: ${e.message}`);
   }
@@ -94,7 +96,7 @@ async function analyzePage(url, pageType = 'homepage', extractSignals = true, br
   // 5. Extract AI signals (schema, meta, media, aeo) — typically from homepage
   let extracted = null;
   if (extractSignals) {
-    extracted = extractAISignals($js, jsHtml, rawHtml, $raw);
+    extracted = extractAISignals($js, jsHtml, rawHtml, $raw, responseHeaders);
   }
 
   // 6. Discover internal links (for subpage crawling)
@@ -394,7 +396,7 @@ function computeJsDiff($raw, $js, rawHtml, jsHtml) {
  * Extract AI visibility signals from the rendered DOM.
  * Returns schema, meta, media, and aeo data matching the unified schema.
  */
-function extractAISignals($js, jsHtml, rawHtml, $raw) {
+function extractAISignals($js, jsHtml, rawHtml, $raw, responseHeaders = {}) {
   const htmlLower = jsHtml.toLowerCase();
 
   // Parse JSON-LD schemas
@@ -565,7 +567,84 @@ function extractAISignals($js, jsHtml, rawHtml, $raw) {
     has_digital_asset_schema: schema.has_software_app || schema.has_data_download || schema.has_digital_document || schema.has_media_object,
   };
 
-  return { schema, meta, media, aeo, digital_assets, protocol_signals };
+  // ── Protocol Security Signals ──
+  const getHeader = (name) => {
+    const lower = name.toLowerCase();
+    for (const [k, v] of Object.entries(responseHeaders)) {
+      if (k.toLowerCase() === lower) return v;
+    }
+    return null;
+  };
+
+  const cspHeader = getHeader('content-security-policy') || '';
+  const hstsHeader = getHeader('strict-transport-security') || '';
+  const xFrameHeader = getHeader('x-frame-options') || '';
+  const xContentType = getHeader('x-content-type-options') || '';
+  const permissionsPolicy = getHeader('permissions-policy') || '';
+
+  // MCP tool description analysis — check for Unicode obfuscation patterns
+  const mcpToolDescriptions = declarativeForms.map(f => f.tooldescription || '');
+  const unicodePattern = /[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF\uFFF0-\uFFFF]/;
+  const hasUnicodeObfuscation = mcpToolDescriptions.some(d => unicodePattern.test(d));
+  const hasSuspiciousToolDesc = mcpToolDescriptions.some(d =>
+    /eval\s*\(|function\s*\(|<script|javascript:|data:/i.test(d)
+  );
+
+  // Agent card signature verification (check if agent-card content is signed)
+  const agentCardScripts = $js('script[type="application/ld+json"]').toArray()
+    .filter(el => {
+      try {
+        const data = JSON.parse($js(el).html());
+        return data['@type'] === 'AgentCard' || data.type === 'agent-card';
+      } catch { return false; }
+    });
+  const hasSignedAgentCard = htmlLower.includes('"signature"') && htmlLower.includes('"publickey"');
+
+  // Cross-origin resource policy
+  const corsHeader = getHeader('access-control-allow-origin') || '';
+  const isWildcardCors = corsHeader === '*';
+
+  // Inline script detection (CSP concern)
+  const inlineScriptCount = $js('script:not([src])').length;
+  const hasNoncedScripts = $js('script[nonce]').length > 0;
+
+  // Subresource integrity
+  const scriptsWithSri = $js('script[integrity]').length;
+  const totalExternalScripts = $js('script[src]').length;
+
+  const security_signals = {
+    headers: {
+      has_csp: cspHeader.length > 0,
+      csp_has_default_src: cspHeader.includes('default-src'),
+      csp_allows_unsafe_inline: cspHeader.includes("'unsafe-inline'"),
+      csp_allows_unsafe_eval: cspHeader.includes("'unsafe-eval'"),
+      has_hsts: hstsHeader.length > 0,
+      hsts_max_age: parseInt((hstsHeader.match(/max-age=(\d+)/) || [])[1] || '0', 10),
+      has_x_frame_options: xFrameHeader.length > 0,
+      has_x_content_type_options: xContentType.toLowerCase() === 'nosniff',
+      has_permissions_policy: permissionsPolicy.length > 0,
+      is_wildcard_cors: isWildcardCors,
+    },
+    mcp_safety: {
+      tool_count: declarativeForms.length,
+      has_unicode_obfuscation: hasUnicodeObfuscation,
+      has_suspicious_descriptions: hasSuspiciousToolDesc,
+      descriptions_checked: mcpToolDescriptions.length,
+    },
+    agent_card: {
+      has_signed_card: hasSignedAgentCard,
+      card_in_dom: agentCardScripts.length > 0,
+    },
+    script_safety: {
+      inline_script_count: inlineScriptCount,
+      has_nonced_scripts: hasNoncedScripts,
+      external_scripts_with_sri: scriptsWithSri,
+      total_external_scripts: totalExternalScripts,
+      sri_coverage_pct: totalExternalScripts > 0 ? Math.round((scriptsWithSri / totalExternalScripts) * 100) : 100,
+    },
+  };
+
+  return { schema, meta, media, aeo, digital_assets, protocol_signals, security_signals };
 }
 
 

@@ -34,6 +34,8 @@ const {
   calculateForgeScore,
   generateSeoFindings,
   getSeoScoreBreakdown,
+  calculateProtocolSecurity,
+  generateSecurityFindings,
 } = require("./src/scoring.js");
 const { fetchPageSpeedData } = require("./src/pagespeed.js");
 
@@ -187,7 +189,7 @@ async function performScan(url, maxPages = 5, industry = "general") {
       console.error(`Homepage analysis failed for ${url}:`, homeErr.message);
       homepageAnalysis = {
         url, type: "homepage", status_code: 0, response_time_ms: 0,
-        extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {}, protocol_signals: {} },
+        extracted: { schema: {}, meta: {}, media: {}, aeo: {}, digital_assets: {}, protocol_signals: {}, security_signals: {} },
         scores: {}, overall: 0, seo_details: null, js_diff: null, _internalLinks: [],
       };
     }
@@ -220,6 +222,7 @@ async function performScan(url, maxPages = 5, industry = "general") {
       aeo: homepageAnalysis.extracted.aeo,
       digital_assets: homepageAnalysis.extracted.digital_assets,
       protocol_signals: homepageAnalysis.extracted.protocol_signals,
+      security_signals: homepageAnalysis.extracted.security_signals,
     };
 
     const aiScores = computeScores(checks);
@@ -246,9 +249,11 @@ async function performScan(url, maxPages = 5, industry = "general") {
 
     const marketingHealth = calculateMarketingHealth(allPages, checks);
     const seoHealth = calculateSeoHealth(allPages, checks, pageSpeedData);
+    const protocolSecurity = calculateProtocolSecurity(checks);
     const aiFindings = generateFindings(checks);
     const marketingFindings = generateMarketingFindings(marketingHealth, checks);
     const seoFindings = generateSeoFindings(seoHealth, allPages, pageSpeedData);
+    const securityFindings = generateSecurityFindings(protocolSecurity, checks);
 
     for (const mf of marketingFindings) {
       const entry = {
@@ -268,6 +273,11 @@ async function performScan(url, maxPages = 5, industry = "general") {
     // Merge SEO findings into main findings
     for (const priority of ["p0", "p1", "p2"]) {
       aiFindings[priority].push(...(seoFindings[priority] || []));
+    }
+
+    // Merge security findings into main findings
+    for (const priority of ["p0", "p1", "p2"]) {
+      aiFindings[priority].push(...(securityFindings[priority] || []));
     }
 
     const recommendations = [];
@@ -318,6 +328,7 @@ async function performScan(url, maxPages = 5, industry = "general") {
         },
         seo_health: seoHealth,
         marketing_health: marketingHealth,
+        protocol_security: protocolSecurity,
         forge_score: {
           overall: forgeScoreOverall,
           grade: getGrade(forgeScoreOverall),
@@ -355,6 +366,7 @@ function buildScanResponse(results) {
         `SEO Health: ${results.scores.seo_health.overall}/100 (${results.scores.seo_health.grade})`,
         `  CWV: ${results.scores.seo_health.sub_scores.cwv} | Technical: ${results.scores.seo_health.sub_scores.technical} | On-Page: ${results.scores.seo_health.sub_scores.on_page} | Mobile: ${results.scores.seo_health.sub_scores.mobile_perf}`,
         `Marketing Health: ${results.scores.marketing_health.overall}/100 (${results.scores.marketing_health.grade})`,
+        `Protocol Security: ${results.scores.protocol_security.overall}/100 (${results.scores.protocol_security.grade})`,
         `Findings: ${results.findings.p0.length} critical, ${results.findings.p1.length} important, ${results.findings.p2.length} nice-to-have`,
         `Revenue Impact: $${results.revenue_impact.monthly_low.toLocaleString()}-$${results.revenue_impact.monthly_high.toLocaleString()}/mo`,
         `Pages scanned: ${results.metadata.pages_scanned} in ${(results.metadata.scan_duration_ms / 1000).toFixed(1)}s`,

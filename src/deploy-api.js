@@ -587,14 +587,19 @@ function aggregateTools(events) {
 }
 
 function generateReportHtml(scan, results) {
-  const grade = results.scores?.combined?.grade || "?";
-  const overall = results.scores?.combined?.overall || 0;
+  const grade = results.scores?.combined?.grade || results.scores?.forge_score?.grade || "?";
+  const overall = results.scores?.combined?.overall || results.scores?.forge_score?.overall || 0;
   const geo = results.scores?.ai_visibility?.geo || 0;
   const multi = results.scores?.ai_visibility?.multimodal || 0;
   const agent = results.scores?.ai_visibility?.agent_ready || 0;
   const mh = results.scores?.marketing_health?.overall || 0;
+  const secScore = results.scores?.protocol_security?.overall || 0;
+  const secGrade = results.scores?.protocol_security?.grade || "?";
+  const secSubs = results.scores?.protocol_security?.sub_scores || {};
+  const secSignals = results.scores?.protocol_security?.signals || {};
 
   const gradeColor = overall >= 80 ? "#22c55e" : overall >= 60 ? "#eab308" : overall >= 40 ? "#f97316" : "#ef4444";
+  const secColor = secScore >= 80 ? "#22c55e" : secScore >= 60 ? "#eab308" : secScore >= 40 ? "#f97316" : "#ef4444";
 
   const findingsHtml = (results.findings?.p0 || []).map(f =>
     `<tr><td class="critical">P0</td><td>${esc(f.action)}</td><td>${esc(f.detail || "")}</td></tr>`
@@ -602,14 +607,44 @@ function generateReportHtml(scan, results) {
     `<tr><td class="important">P1</td><td>${esc(f.action)}</td><td>${esc(f.detail || "")}</td></tr>`
   )).join("\n");
 
+  // Security findings (filter by source)
+  const securityFindingsHtml = (results.findings?.p0 || []).filter(f => f.source === "protocol_security").map(f =>
+    `<tr><td class="critical">CRITICAL</td><td>${esc(f.action)}</td><td>${esc(f.detail || "")}</td></tr>`
+  ).concat((results.findings?.p1 || []).filter(f => f.source === "protocol_security").map(f =>
+    `<tr><td class="important">HIGH</td><td>${esc(f.action)}</td><td>${esc(f.detail || "")}</td></tr>`
+  )).concat((results.findings?.p2 || []).filter(f => f.source === "protocol_security").map(f =>
+    `<tr><td style="color:#6366f1;font-weight:bold">MEDIUM</td><td>${esc(f.action)}</td><td>${esc(f.detail || "")}</td></tr>`
+  )).join("\n");
+
+  // Security sub-score rows
+  const secSubRows = [
+    { label: "Transport Security", score: secSubs.transport_security || 0, max: 20 },
+    { label: "Content Security Policy", score: secSubs.content_security_policy || 0, max: 20 },
+    { label: "MCP Tool Safety", score: secSubs.mcp_tool_safety || 0, max: 20 },
+    { label: "Agent Card Verification", score: secSubs.agent_card_verification || 0, max: 15 },
+    { label: "Script Integrity", score: secSubs.script_integrity || 0, max: 15 },
+    { label: "Cross-Layer Defense", score: secSubs.cross_layer_defense || 0, max: 10 },
+  ].map(s => {
+    const pct = Math.round((s.score / s.max) * 100);
+    const c = pct >= 80 ? "#22c55e" : pct >= 60 ? "#eab308" : pct >= 40 ? "#f97316" : "#ef4444";
+    return `<tr><td>${esc(s.label)}</td><td style="font-weight:bold;color:${c}">${s.score}/${s.max}</td>
+    <td><div style="background:#eee;border-radius:4px;height:8px;width:100%"><div style="background:${c};border-radius:4px;height:8px;width:${pct}%"></div></div></td></tr>`;
+  }).join("\n");
+
+  // Security header checks
+  const headers = secSignals.headers || {};
+  const checkMark = (v) => v ? "&#10003;" : "&#10007;";
+  const checkColor = (v) => v ? "#22c55e" : "#ef4444";
+
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>AI Visibility Report — ${esc(results.client?.name || scan.url)}</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px 20px; color: #1a1a1a; }
   h1 { color: #6366f1; margin-bottom: 4px; }
+  h2 { margin-top: 32px; padding-top: 16px; border-top: 2px solid #f0f0f5; }
   .grade { display: inline-block; font-size: 48px; font-weight: bold; color: ${gradeColor}; border: 3px solid ${gradeColor}; border-radius: 12px; padding: 8px 24px; margin: 16px 0; }
-  .scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin: 24px 0; }
+  .scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin: 24px 0; }
   .score-card { background: #f8f8fc; border: 1px solid #e2e2f0; border-radius: 8px; padding: 16px; text-align: center; }
   .score-card .value { font-size: 28px; font-weight: bold; color: #6366f1; }
   .score-card .label { font-size: 13px; color: #666; margin-top: 4px; }
@@ -618,8 +653,11 @@ function generateReportHtml(scan, results) {
   th { background: #f8f8fc; font-weight: 600; }
   .critical { color: #ef4444; font-weight: bold; }
   .important { color: #f97316; font-weight: bold; }
+  .sec-badge { display: inline-block; font-size: 36px; font-weight: bold; color: ${secColor}; border: 2px solid ${secColor}; border-radius: 10px; padding: 6px 18px; }
+  .header-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 16px 0; }
+  .header-check { padding: 8px 12px; background: #f8f8fc; border-radius: 6px; font-size: 13px; }
   .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; color: #999; font-size: 13px; text-align: center; }
-  @media print { body { padding: 0; } }
+  @media print { body { padding: 0; } .page-break { page-break-before: always; } }
 </style></head><body>
 <h1>AI Visibility Report</h1>
 <p>${esc(results.client?.name || "")} — ${esc(results.client?.url || scan.url)}</p>
@@ -633,6 +671,7 @@ function generateReportHtml(scan, results) {
   <div class="score-card"><div class="value">${multi}</div><div class="label">Multimodal</div></div>
   <div class="score-card"><div class="value">${agent}</div><div class="label">Agent-Ready</div></div>
   <div class="score-card"><div class="value">${mh}</div><div class="label">Marketing Health</div></div>
+  <div class="score-card"><div class="value" style="color:${secColor}">${secScore}</div><div class="label">Protocol Security</div></div>
 </div>
 
 <h2>Findings</h2>
@@ -640,6 +679,35 @@ function generateReportHtml(scan, results) {
 <tr><th>Priority</th><th>Action</th><th>Detail</th></tr>
 ${findingsHtml || "<tr><td colspan='3'>No critical findings</td></tr>"}
 </table>
+
+<div class="page-break"></div>
+<h2>Protocol Security Audit</h2>
+<p>Assessment of your site's defense posture against the 7 known protocol-layer attack vectors: MCP tool poisoning, supply chain attacks, config injection, rug pulls, AgentCard spoofing, A2UI catalog poisoning, and cross-layer attacks.</p>
+
+<div class="sec-badge">${esc(secGrade)}</div>
+<span style="font-size:20px; margin-left:12px">${secScore}/100</span>
+
+<h3>Sub-Scores</h3>
+<table>
+<tr><th>Category</th><th>Score</th><th>Progress</th></tr>
+${secSubRows}
+</table>
+
+<h3>Security Headers</h3>
+<div class="header-grid">
+  <div class="header-check"><span style="color:${checkColor(headers.has_hsts)}">${checkMark(headers.has_hsts)}</span> HSTS (Strict-Transport-Security)</div>
+  <div class="header-check"><span style="color:${checkColor(headers.has_csp)}">${checkMark(headers.has_csp)}</span> Content Security Policy</div>
+  <div class="header-check"><span style="color:${checkColor(headers.has_x_frame_options)}">${checkMark(headers.has_x_frame_options)}</span> X-Frame-Options</div>
+  <div class="header-check"><span style="color:${checkColor(headers.has_x_content_type_options)}">${checkMark(headers.has_x_content_type_options)}</span> X-Content-Type-Options</div>
+  <div class="header-check"><span style="color:${checkColor(headers.has_permissions_policy)}">${checkMark(headers.has_permissions_policy)}</span> Permissions-Policy</div>
+  <div class="header-check"><span style="color:${checkColor(!headers.is_wildcard_cors)}">${checkMark(!headers.is_wildcard_cors)}</span> CORS Restricted (no wildcard)</div>
+</div>
+
+${securityFindingsHtml ? `<h3>Security Findings</h3>
+<table>
+<tr><th>Severity</th><th>Issue</th><th>Detail</th></tr>
+${securityFindingsHtml}
+</table>` : "<p><strong>No protocol security vulnerabilities detected.</strong></p>"}
 
 <div class="footer">
   Generated by <strong>Ethereal Forge</strong> — <a href="https://etherealmedia.ai">etherealmedia.ai</a>

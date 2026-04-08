@@ -72,6 +72,13 @@ function gateResultsByTier(fullResults, tier) {
         grade: gated.scores.seo_health.grade,
       };
     }
+    // Protocol Security: show overall + grade only (details are upgrade incentive)
+    if (gated.scores.protocol_security) {
+      gated.scores.protocol_security = {
+        overall: gated.scores.protocol_security.overall,
+        grade: gated.scores.protocol_security.grade,
+      };
+    }
 
     // Only show P0 findings (critical) — rest are upgrade incentive
     const p1Count = gated.findings.p1.length;
@@ -123,6 +130,15 @@ function gateResultsByTier(fullResults, tier) {
         broken_link_count: gated.scores.seo_health.broken_link_count,
         pagespeed_available: gated.scores.seo_health.pagespeed_available,
         // Hide lighthouse raw scores (diagnostic only)
+      };
+    }
+
+    // Protocol Security: show sub-scores, hide raw signals
+    if (gated.scores.protocol_security) {
+      gated.scores.protocol_security = {
+        overall: gated.scores.protocol_security.overall,
+        grade: gated.scores.protocol_security.grade,
+        sub_scores: gated.scores.protocol_security.sub_scores,
       };
     }
 
@@ -622,6 +638,7 @@ async function runScanAsync(scanId, scanRecord, performScan) {
         agent_ready: results.scores.ai_visibility.agent_ready,
         seo_health: results.scores.seo_health?.overall || null,
         marketing_health: results.scores.marketing_health.overall,
+        protocol_security: results.scores.protocol_security?.overall || null,
         forge_score: forgeScore.overall,
         combined: forgeScore.overall,
       },
