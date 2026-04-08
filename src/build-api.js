@@ -3,6 +3,7 @@
 // All endpoints accept JSON input and return generated file content
 
 const { Router } = require("express");
+const { z } = require("zod");
 const {
   generateLlmsTxt,
   generateLlmsFullTxt,
@@ -17,59 +18,106 @@ const {
   generatePackage,
 } = require("./generators.js");
 
-function createBuildApiRouter() {
-  const router = Router();
+// ── Zod schemas for Build API ──
+const CompanyUrlSchema = z.object({
+  company_name: z.string().min(1, "company_name is required").max(500),
+  url: z.string().url("url must be a valid URL"),
+}).passthrough(); // allow additional fields through
 
-  // Shared validation
-  function requireFields(body, fields) {
-    const missing = fields.filter(f => !body[f]);
-    if (missing.length) return `Missing required fields: ${missing.join(", ")}`;
+const UrlOnlySchema = z.object({
+  url: z.string().url("url must be a valid URL"),
+}).passthrough();
+
+const DomainPagesSchema = z.object({
+  domain: z.string().min(1, "domain is required").max(500),
+  pages: z.array(z.object({
+    path: z.string(),
+    priority: z.number().optional(),
+    changefreq: z.string().optional(),
+  })).min(1, "pages[] is required (array of {path, priority?, changefreq?})"),
+}).passthrough();
+
+const ScanResultsSchema = z.object({
+  scan_results: z.object({
+    checks: z.object({
+      aeo: z.record(z.any()),
+    }),
+  }),
+});
+
+const WebmcpFormsSchema = z.object({
+  forms: z.array(z.object({
+    name: z.string(),
+    fields: z.array(z.any()).optional(),
+  })).min(1, "forms[] required"),
+}).passthrough();
+
+const WebmcpToolsSchema = z.object({
+  company_name: z.string().min(1, "company_name is required"),
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    endpoint: z.string().optional(),
+  })).min(1, "tools[] required"),
+}).passthrough();
+
+const Ap2Schema = z.object({
+  company_name: z.string().min(1, "company_name is required"),
+  url: z.string().url("url must be a valid URL"),
+  scopes: z.array(z.string()).optional(),
+});
+
+// Helper to run Zod validation and return 400 on failure
+function zodValidate(schema, req, res) {
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     return null;
   }
+  return parsed.data;
+}
+
+function createBuildApiRouter() {
+  const router = Router();
 
   // ═══════════════════════════════════════════════════════════════════
   // GEO LAYER
   // ═══════════════════════════════════════════════════════════════════
 
   router.post("/api/v1/build/geo/llms-txt", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateLlmsTxt(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateLlmsTxt(data));
   });
 
   router.post("/api/v1/build/geo/llms-full-txt", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateLlmsFullTxt(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateLlmsFullTxt(data));
   });
 
   router.post("/api/v1/build/geo/robots-txt", (req, res) => {
-    const err = requireFields(req.body, ["url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateRobotsTxt(req.body));
+    const data = zodValidate(UrlOnlySchema, req, res);
+    if (!data) return;
+    res.json(generateRobotsTxt(data));
   });
 
   router.post("/api/v1/build/geo/sitemap", (req, res) => {
-    const err = requireFields(req.body, ["domain"]);
-    if (err) return res.status(400).json({ error: err });
-    if (!req.body.pages?.length) {
-      return res.status(400).json({ error: "pages[] is required (array of {path, priority?, changefreq?})" });
-    }
-    res.json(generateSitemapXml(req.body));
+    const data = zodValidate(DomainPagesSchema, req, res);
+    if (!data) return;
+    res.json(generateSitemapXml(data));
   });
 
   router.post("/api/v1/build/geo/schema", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateSchemaOrg(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateSchemaOrg(data));
   });
 
   router.post("/api/v1/build/geo/semantic-audit", (req, res) => {
-    // Return semantic findings from scan results
-    const { scan_results } = req.body;
-    if (!scan_results?.checks?.aeo) {
-      return res.status(400).json({ error: "scan_results with checks.aeo data required" });
-    }
+    const data = zodValidate(ScanResultsSchema, req, res);
+    if (!data) return;
+    const { scan_results } = data;
     const aeo = scan_results.checks.aeo;
     const issues = [];
     if (!aeo.has_main) issues.push({ element: "<main>", severity: "high", fix: "Wrap primary content in a <main> tag" });
@@ -90,11 +138,9 @@ function createBuildApiRouter() {
   });
 
   router.post("/api/v1/build/geo/aria-audit", (req, res) => {
-    const { scan_results } = req.body;
-    if (!scan_results?.checks?.aeo) {
-      return res.status(400).json({ error: "scan_results with checks.aeo data required" });
-    }
-    const aeo = scan_results.checks.aeo;
+    const data = zodValidate(ScanResultsSchema, req, res);
+    if (!data) return;
+    const aeo = data.scan_results.checks.aeo;
     const recommendations = [];
 
     if (aeo.aria_count === 0) {
@@ -121,23 +167,21 @@ function createBuildApiRouter() {
   // ═══════════════════════════════════════════════════════════════════
 
   router.post("/api/v1/build/protocol/agent-card", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateAgentCard(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateAgentCard(data));
   });
 
   router.post("/api/v1/build/protocol/ucp-manifest", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateUcpManifest(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateUcpManifest(data));
   });
 
   router.post("/api/v1/build/protocol/ap2", (req, res) => {
-    // AP2 authorization scaffolding — generates OAuth2 config skeleton
-    const { company_name, url, scopes } = req.body;
-    if (!company_name || !url) {
-      return res.status(400).json({ error: "company_name and url required" });
-    }
+    const data = zodValidate(Ap2Schema, req, res);
+    if (!data) return;
+    const { company_name, url, scopes } = data;
     const config = {
       issuer: url,
       authorization_endpoint: `${url.replace(/\/$/, "")}/auth/authorize`,
@@ -161,31 +205,21 @@ function createBuildApiRouter() {
   // ═══════════════════════════════════════════════════════════════════
 
   router.post("/api/v1/build/webmcp/forms", (req, res) => {
-    if (!req.body.forms?.length) {
-      return res.status(400).json({
-        error: "forms[] required",
-        example: { forms: [{ name: "contact", fields: [{ name: "email", type: "email", required: true }] }] },
-      });
-    }
-    res.json(generateWebmcpForms(req.body));
+    const data = zodValidate(WebmcpFormsSchema, req, res);
+    if (!data) return;
+    res.json(generateWebmcpForms(data));
   });
 
   router.post("/api/v1/build/webmcp/tools", (req, res) => {
-    const err = requireFields(req.body, ["company_name"]);
-    if (err) return res.status(400).json({ error: err });
-    if (!req.body.tools?.length) {
-      return res.status(400).json({
-        error: "tools[] required",
-        example: { tools: [{ name: "get_info", description: "Get business info", endpoint: "/api/info" }] },
-      });
-    }
-    res.json(generateWebmcpTools(req.body));
+    const data = zodValidate(WebmcpToolsSchema, req, res);
+    if (!data) return;
+    res.json(generateWebmcpTools(data));
   });
 
   router.post("/api/v1/build/webmcp/meta", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generateWebmcpMeta(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generateWebmcpMeta(data));
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -193,9 +227,9 @@ function createBuildApiRouter() {
   // ═══════════════════════════════════════════════════════════════════
 
   router.post("/api/v1/build/package", (req, res) => {
-    const err = requireFields(req.body, ["company_name", "url"]);
-    if (err) return res.status(400).json({ error: err });
-    res.json(generatePackage(req.body));
+    const data = zodValidate(CompanyUrlSchema, req, res);
+    if (!data) return;
+    res.json(generatePackage(data));
   });
 
   return router;

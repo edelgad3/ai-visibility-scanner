@@ -3,7 +3,36 @@
 // Also: outbound webhooks, analytics, PDF reports
 
 const { Router } = require("express");
+const { z } = require("zod");
 const { generatePackage } = require("./generators.js");
+
+// ── Zod schemas for Deploy API ──
+const DeployEdgeSchema = z.object({
+  company_name: z.string().min(1, "company_name is required"),
+  url: z.string().url("url must be a valid URL"),
+  platform: z.enum(["cloudflare", "vercel"]).default("cloudflare"),
+  tier: z.string().optional(),
+}).passthrough();
+
+const DeployPrSchema = z.object({
+  company_name: z.string().min(1, "company_name is required"),
+  url: z.string().url("url must be a valid URL"),
+  repo_structure: z.enum(["nextjs", "static", "react"]).default("nextjs"),
+  tier: z.string().optional(),
+}).passthrough();
+
+const DeployPluginSchema = z.object({
+  company_name: z.string().min(1, "company_name is required"),
+  url: z.string().url("url must be a valid URL"),
+  cms: z.enum(["wordpress", "shopify"]).default("wordpress"),
+  tier: z.string().optional(),
+}).passthrough();
+
+const RegisterWebhookSchema = z.object({
+  url: z.string().url("url must be a valid URL"),
+  events: z.array(z.enum(["scan.completed", "scan.failed", "build.ready", "usage.threshold"])).min(1, "events[] required"),
+  secret: z.string().max(500).optional(),
+});
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -17,10 +46,11 @@ function createDeployApiRouter() {
 
   // POST /api/v1/build/deploy/edge — Generate Cloudflare/Vercel Edge Worker
   router.post("/api/v1/build/deploy/edge", (req, res) => {
-    const { company_name, url, platform = "cloudflare" } = req.body;
-    if (!company_name || !url) {
-      return res.status(400).json({ error: "company_name and url required" });
+    const parsed = DeployEdgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { company_name, url, platform } = parsed.data;
 
     // Generate the artifacts first
     const pkg = generatePackage({ ...req.body, tier: req.body.tier || "forge" });
@@ -59,10 +89,11 @@ function createDeployApiRouter() {
 
   // POST /api/v1/build/deploy/pr — Generate files for a GitHub PR
   router.post("/api/v1/build/deploy/pr", (req, res) => {
-    const { company_name, url, repo_structure = "nextjs" } = req.body;
-    if (!company_name || !url) {
-      return res.status(400).json({ error: "company_name and url required" });
+    const parsed = DeployPrSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { company_name, url, repo_structure } = parsed.data;
 
     const pkg = generatePackage({ ...req.body, tier: req.body.tier || "forge" });
     const files = [];
@@ -124,10 +155,11 @@ function createDeployApiRouter() {
 
   // POST /api/v1/build/deploy/plugin — Generate CMS plugin package
   router.post("/api/v1/build/deploy/plugin", (req, res) => {
-    const { company_name, url, cms = "wordpress" } = req.body;
-    if (!company_name || !url) {
-      return res.status(400).json({ error: "company_name and url required" });
+    const parsed = DeployPluginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { company_name, url, cms } = parsed.data;
 
     const pkg = generatePackage({ ...req.body, tier: req.body.tier || "forge" });
 
@@ -165,13 +197,14 @@ function createDeployApiRouter() {
 
   // POST /api/v1/webhooks — Register a webhook URL
   router.post("/api/v1/webhooks", async (req, res) => {
-    const { url, events, secret } = req.body;
-    if (!url || !events?.length) {
+    const parsed = RegisterWebhookSchema.safeParse(req.body);
+    if (!parsed.success) {
       return res.status(400).json({
-        error: "url and events[] required",
+        error: parsed.error.issues.map(i => i.message).join("; "),
         available_events: ["scan.completed", "scan.failed", "build.ready", "usage.threshold"],
       });
     }
+    const { url, events, secret } = parsed.data;
 
     const crypto = require("crypto");
     const webhookId = crypto.randomUUID();

@@ -73,6 +73,9 @@ const { createDeployApiRouter } = require("./src/deploy-api.js");
 // UCP Commerce API module
 const { createUcpApiRouter } = require("./src/ucp-api.js");
 
+// Asset Catalog API module
+const { createCatalogApiRouter } = require("./src/catalog-api.js");
+
 // Load bundled dashboard HTML (built by Vite)
 let DASHBOARD_HTML;
 try {
@@ -123,9 +126,14 @@ async function validateScanUrl(urlStr) {
   }
 
   // Resolve hostname to IP and check resolved addresses too (DNS rebinding protection)
+  // 3-second timeout prevents hanging on slow/malicious DNS
+  const DNS_TIMEOUT_MS = 3000;
+  const dnsTimeout = () => new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("DNS resolution timed out")), DNS_TIMEOUT_MS)
+  );
   try {
-    const addresses = await dns.resolve4(hostname).catch(() => []);
-    const addresses6 = await dns.resolve6(hostname).catch(() => []);
+    const addresses = await Promise.race([dns.resolve4(hostname), dnsTimeout()]).catch(() => []);
+    const addresses6 = await Promise.race([dns.resolve6(hostname), dnsTimeout()]).catch(() => []);
     const allAddrs = [...addresses, ...addresses6];
 
     for (const addr of allAddrs) {
@@ -137,7 +145,7 @@ async function validateScanUrl(urlStr) {
     }
   } catch (e) {
     if (e.message.startsWith("Blocked")) throw e;
-    // DNS resolution failed — let the scan fail naturally downstream
+    // DNS resolution failed or timed out — let the scan fail naturally downstream
   }
 
   return parsed.href;
@@ -626,10 +634,11 @@ app.use((_req, res, next) => {
 });
 
 // Rate limiters
-const scanLimiter = rateLimit({ windowMs: 60_000, max: 10, message: { error: "Rate limit exceeded. Max 10 scans/minute." } });
+const scanLimiter = rateLimit({ windowMs: 60_000, max: 5, message: { error: "Too many scans, try again later" } });
 const billingLimiter = rateLimit({ windowMs: 60_000, max: 5, message: { error: "Rate limit exceeded. Max 5 requests/minute." } });
-const globalLimiter = rateLimit({ windowMs: 60_000, max: 100, message: { error: "Rate limit exceeded." } });
-app.use(globalLimiter);
+const generalApiLimiter = rateLimit({ windowMs: 60_000, max: 100, message: { error: "Rate limit exceeded." } });
+app.use("/api/", generalApiLimiter);
+app.post("/api/v1/scan", scanLimiter);
 
 // Stripe webhook must receive raw body — mount BEFORE express.json and as a complete route
 app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -701,6 +710,25 @@ app.get("/", (_req, res) => {
       ucp_order: "POST /api/v1/ucp/order (X-UCP-Key)",
       ucp_order_status: "GET /api/v1/ucp/order/:id (X-UCP-Key)",
       ucp_order_cancel: "POST /api/v1/ucp/order/:id/cancel (X-UCP-Key)",
+      // Asset Catalog (18 endpoints)
+      catalog_summary: "GET /api/v1/agency/catalog/summary",
+      catalog_list: "GET /api/v1/agency/clients/:id/catalog",
+      catalog_pages: "GET /api/v1/agency/clients/:id/catalog/pages",
+      catalog_get: "GET /api/v1/agency/clients/:id/catalog/:assetId",
+      catalog_update: "PUT /api/v1/agency/clients/:id/catalog/:assetId",
+      catalog_archive: "DELETE /api/v1/agency/clients/:id/catalog/:assetId",
+      catalog_annotations: "GET .../catalog/:assetId/annotations",
+      catalog_override: "PUT .../annotations/:type",
+      catalog_clear_override: "DELETE .../annotations/:type/override",
+      catalog_bulk_annotations: "POST .../annotations/bulk",
+      catalog_auto_annotate: "POST .../catalog/:assetId/auto-annotate",
+      catalog_bulk_auto_annotate: "POST .../catalog/auto-annotate",
+      catalog_custom_create: "POST .../custom",
+      catalog_custom_update: "PUT .../custom/:customId",
+      catalog_custom_delete: "DELETE .../custom/:customId",
+      catalog_import: "POST .../catalog/import",
+      catalog_compare: "GET .../catalog/compare",
+      catalog_agent_preview: "GET .../catalog/agent-preview",
       // Billing (agency subscriptions)
       billing_checkout: "POST /api/billing/checkout",
       billing_portal: "POST /api/billing/portal",
@@ -735,6 +763,10 @@ app.use((req, _res, next) => {
   next();
 });
 app.use(agencyApiRouter);
+
+// ── Asset Catalog API ──
+const catalogApiRouter = createCatalogApiRouter();
+app.use(catalogApiRouter);
 
 // Session stores (keyed by transport session ID)
 const defaultSessions = new Map();

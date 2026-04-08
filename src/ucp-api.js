@@ -5,6 +5,32 @@
 
 const { Router } = require("express");
 const crypto = require("crypto");
+const { z } = require("zod");
+
+// ── Zod schemas for UCP API ──
+const RegisterAgentSchema = z.object({
+  agent_name: z.string().min(1, "agent_name is required").max(200),
+  agent_url: z.string().url().optional().nullable(),
+  contact_email: z.string().email("contact_email must be a valid email"),
+  agency_slug: z.string().max(100).optional(),
+});
+
+const QuoteSchema = z.object({
+  offering_id: z.string().uuid("offering_id must be a valid UUID"),
+  quantity: z.number().int().min(1).default(1),
+});
+
+const OrderSchema = z.object({
+  offering_id: z.string().uuid("offering_id must be a valid UUID"),
+  quantity: z.number().int().min(1).default(1),
+  agent_reference: z.string().max(500).optional().nullable(),
+  agent_notes: z.string().max(5000).optional().nullable(),
+  payment_method: z.enum(["stripe", "invoice", "prepaid"]).default("stripe"),
+});
+
+const CancelOrderSchema = z.object({
+  reason: z.string().max(1000).optional(),
+});
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -123,11 +149,11 @@ function createUcpApiRouter() {
   // Public: any agent can register
   // ────────────────────────────────────────────────────────
   router.post("/api/v1/ucp/register", async (req, res) => {
-    const { agent_name, agent_url, contact_email, agency_slug } = req.body;
-
-    if (!agent_name || !contact_email) {
-      return res.status(400).json({ error: "agent_name and contact_email are required" });
+    const parsed = RegisterAgentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { agent_name, agent_url, contact_email, agency_slug } = parsed.data;
 
     if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(503).json({ error: "Database not configured" });
@@ -249,11 +275,11 @@ function createUcpApiRouter() {
   // Public (no auth required)
   // ────────────────────────────────────────────────────────
   router.post("/api/v1/ucp/quote", async (req, res) => {
-    const { offering_id, quantity = 1 } = req.body;
-
-    if (!offering_id) {
-      return res.status(400).json({ error: "offering_id is required" });
+    const parsed = QuoteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { offering_id, quantity } = parsed.data;
 
     if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(503).json({ error: "Database not configured" });
@@ -304,17 +330,17 @@ function createUcpApiRouter() {
   // POST /api/v1/ucp/order — Place order (requires auth)
   // ────────────────────────────────────────────────────────
   router.post("/api/v1/ucp/order", auth, requirePermission("place_order"), async (req, res) => {
+    const parsed = OrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
+    }
     const {
       offering_id,
-      quantity = 1,
+      quantity,
       agent_reference,
       agent_notes,
-      payment_method = "stripe",
-    } = req.body;
-
-    if (!offering_id) {
-      return res.status(400).json({ error: "offering_id is required" });
-    }
+      payment_method,
+    } = parsed.data;
 
     try {
       // Verify offering exists and belongs to the agent's agency
@@ -458,7 +484,11 @@ function createUcpApiRouter() {
   // POST /api/v1/ucp/order/:id/cancel — Cancel order
   // ────────────────────────────────────────────────────────
   router.post("/api/v1/ucp/order/:id/cancel", auth, requirePermission("place_order"), async (req, res) => {
-    const { reason } = req.body;
+    const parsed = CancelOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
+    }
+    const { reason } = parsed.data;
 
     try {
       const orders = await sbQuery(

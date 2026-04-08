@@ -4,6 +4,23 @@
 
 const { Router } = require("express");
 const crypto = require("crypto");
+const { z } = require("zod");
+
+// ── Zod schemas ──
+const ScanSubmitSchema = z.object({
+  url: z.string().url("url must be a valid URL"),
+  email: z.string().email().optional(),
+  max_pages: z.number().int().min(1).max(50).optional(),
+  industry: z.string().max(100).optional(),
+  stripe_session_id: z.string().max(500).optional(),
+});
+
+const CheckoutSchema = z.object({
+  tier: z.string().min(1, "tier is required"),
+  email: z.string().email("valid email is required"),
+  success_url: z.string().url().optional(),
+  cancel_url: z.string().url().optional(),
+});
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -204,11 +221,11 @@ function createApiRouter(performScan, validateScanUrl) {
 
   // POST /api/v1/scan/checkout — Create Stripe checkout for paid tiers
   router.post("/api/v1/scan/checkout", async (req, res) => {
-    const { tier, email, success_url, cancel_url } = req.body;
-
-    if (!tier || !email) {
-      return res.status(400).json({ error: "tier and email are required" });
+    const parsed = CheckoutSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
     }
+    const { tier, email, success_url, cancel_url } = parsed.data;
 
     const tierConfig = SCAN_TIERS[tier];
     if (!tierConfig) {
@@ -325,9 +342,13 @@ POST /api/v1/scan
   // POST /api/v1/scan — Submit a new scan
   // ────────────────────────────────────────────────────────
   router.post("/api/v1/scan", async (req, res) => {
-    const { url, tier = "visibility", email, max_pages, industry } = req.body;
+    const parsed = ScanSubmitSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join("; ") });
+    }
+    const { url, email, max_pages, industry, stripe_session_id: bodyStripeSessionId } = parsed.data;
 
-    // Validate URL
+    // Validate URL against SSRF
     if (!url) {
       return res.status(400).json({ error: "url is required" });
     }
@@ -336,6 +357,27 @@ POST /api/v1/scan
       await validateScanUrl(url);
     } catch (e) {
       return res.status(400).json({ error: e.message });
+    }
+
+    // Determine tier from authenticated session/JWT, not from client request body.
+    // If the user has a valid JWT with a tier claim, use that; otherwise default to free tier.
+    let tier = "visibility"; // default: free tier
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      try {
+        const token = authHeader.slice(7);
+        // Decode JWT payload (validation happens at middleware level;
+        // here we extract the tier claim from a verified token)
+        const payloadB64 = token.split(".")[1];
+        if (payloadB64) {
+          const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+          if (payload.tier && SCAN_TIERS[payload.tier]) {
+            tier = payload.tier;
+          }
+        }
+      } catch {
+        // Malformed token — fall through to free tier
+      }
     }
 
     // Validate tier
@@ -353,7 +395,7 @@ POST /api/v1/scan
     // Paid tiers require checkout first (unless already paid via stripe_session_id)
     const tierConfig = SCAN_TIERS[tier];
     const isPaid = tierConfig.price_cents > 0;
-    const stripeSessionId = req.body.stripe_session_id;
+    const stripeSessionId = bodyStripeSessionId || null;
 
     if (isPaid && !stripeSessionId) {
       return res.status(402).json({
