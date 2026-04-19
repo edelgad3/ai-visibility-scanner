@@ -548,12 +548,32 @@ function extractAISignals($js, jsHtml, rawHtml, $raw, responseHeaders = {}) {
   const modelContextMeta = $js('meta[name="model-context"], meta[name="model-context:name"]').length;
   const has_webmcp_registration = hasModelContext || modelContextMeta > 0;
 
+  // W3C WebMCP components 3 + 4 (from Client-Install-Components spec)
+  // #3 Human-in-the-loop: requestUserInteraction() calls
+  // #4 Agent detection: event.agentInvoked flag on SubmitEvent
+  const hasHumanInLoop = /\brequestuserinteraction\s*\(/i.test(htmlLower);
+  const hasAgentDetection =
+    htmlLower.includes('event.agentinvoked') ||
+    /\bagentinvoked\b/i.test(htmlLower);
+
+  // Ethereal Extra #20 Agent analytics: toolactivated event + agentInvoked logging
+  const hasToolActivatedEvent = /\btoolactivated\b/i.test(htmlLower);
+  const hasAgentInvokedLogging = /agentinvoked[\s\S]{0,120}(log|track|analytics|gtag|dataLayer|posthog)/i.test(htmlLower);
+  const hasAgentAnalytics = hasToolActivatedEvent || hasAgentInvokedLogging;
+
   const protocol_signals = {
     a2ui: { scripts: a2uiScripts, attributes: a2uiAttrs, meta: a2uiMeta, detected: has_a2ui_dom },
     ag_ui: { scripts: agUiScripts, meta: agUiMeta, sse: agUiSse, detected: has_ag_ui_dom },
     acp: { meta: acpMeta, links: acpLinks, detected: has_acp_dom },
     anp: { meta: didMeta, links: didLinks, detected: has_anp_dom },
     webmcp_registration: { navigator_api: hasModelContext, meta: modelContextMeta, detected: has_webmcp_registration },
+    human_in_loop: { detected: hasHumanInLoop, source: hasHumanInLoop ? 'requestUserInteraction' : null },
+    agent_detection: { detected: hasAgentDetection, source: hasAgentDetection ? 'event.agentInvoked' : null },
+    agent_analytics: {
+      detected: hasAgentAnalytics,
+      tool_activated_event: hasToolActivatedEvent,
+      agent_invoked_logging: hasAgentInvokedLogging,
+    },
   };
 
   // Digital assets

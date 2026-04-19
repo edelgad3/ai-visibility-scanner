@@ -4,7 +4,7 @@ async function checkEndpoint(baseUrl, path) {
   try {
     const url = new URL(path, baseUrl).href;
     const response = await axios.get(url, { timeout: 10000, validateStatus: () => true });
-    
+
     if (response.status === 200) {
       return {
         exists: true,
@@ -25,15 +25,20 @@ async function probeEndpoints(baseUrl) {
     sitemap: { exists: false, url_count: 0 },
     llms_txt: { exists: false, length: 0, preview: "" },
     llms_full_txt: { exists: false, length: 0, preview: "" },
-    agent_card: { exists: false },
+    agent_card: { exists: false, declares_ap2: false, declares_mcp: false, capabilities: [] },
     ucp: { exists: false },
+    ap2: { exists: false, source: null, version: null },
     a2ui: { exists: false, version: null },
     ag_ui: { exists: false, version: null },
     acp: { exists: false, version: null },
     anp: { exists: false, has_did: false }
   };
 
-  // Launch all requests concurrently
+  // Launch all requests concurrently.
+  // Per Client-Install-Components spec (2026-04): UCP lives at
+  // /.well-known/ucp-manifest.json (not /.well-known/ucp) and AP2 mandates
+  // live at /.well-known/ap2-mandates.json. AP2 may additionally be declared
+  // as a capability in agent-card.json, which we detect below.
   const [
     robotsRes,
     sitemapRes,
@@ -41,6 +46,8 @@ async function probeEndpoints(baseUrl) {
     llmsFullRes,
     agentCardRes,
     ucpRes,
+    ucpLegacyRes,
+    ap2Res,
     a2uiRes,
     agUiRes,
     acpRes,
@@ -52,7 +59,9 @@ async function probeEndpoints(baseUrl) {
     checkEndpoint(baseUrl, '/llms.txt'),
     checkEndpoint(baseUrl, '/llms-full.txt'),
     checkEndpoint(baseUrl, '/.well-known/agent-card.json'),
+    checkEndpoint(baseUrl, '/.well-known/ucp-manifest.json'),
     checkEndpoint(baseUrl, '/.well-known/ucp'),
+    checkEndpoint(baseUrl, '/.well-known/ap2-mandates.json'),
     checkEndpoint(baseUrl, '/.well-known/a2ui-config.json'),
     checkEndpoint(baseUrl, '/.well-known/agui-manifest.json'),
     checkEndpoint(baseUrl, '/.well-known/acp.json'),
@@ -65,10 +74,10 @@ async function probeEndpoints(baseUrl) {
     results.robots.exists = true;
     results.robots.content_preview = robotsRes.content.substring(0, 500);
     results.robots.has_sitemap_reference = /sitemap:/i.test(robotsRes.content);
-    
+
     const lines = robotsRes.content.split('\n');
     for (const line of lines) {
-      if (/user-agent:.*(gptbot|chatgpt-user|claudebot|perplexitybot|oai-searchbot)/i.test(line)) {
+      if (/user-agent:.*(gptbot|chatgpt-user|claudebot|perplexitybot|oai-searchbot|google-extended)/i.test(line)) {
         results.robots.ai_crawler_rules.push(line.trim());
       }
     }
@@ -96,11 +105,53 @@ async function probeEndpoints(baseUrl) {
     results.llms_full_txt.preview = llmsFullRes.content.substring(0, 300);
   }
 
-  // 5. Process Agent endpoints
-  if (agentCardRes.exists) results.agent_card.exists = true;
-  if (ucpRes.exists) results.ucp.exists = true;
+  // 5. Agent Card — primary A2A discovery, and also the canonical place to
+  // declare AP2/MCP/UCP capabilities when the client is using the bundled
+  // approach instead of separate /.well-known files.
+  if (agentCardRes.exists) {
+    results.agent_card.exists = true;
+    try {
+      const parsed = JSON.parse(agentCardRes.content);
+      const caps = Array.isArray(parsed.capabilities)
+        ? parsed.capabilities.map((c) => (typeof c === 'string' ? c.toLowerCase() : (c && c.name) ? String(c.name).toLowerCase() : ''))
+        : [];
+      results.agent_card.capabilities = caps.filter(Boolean);
+      const hasAp2 =
+        caps.some((c) => c.includes('ap2') || c.includes('payment')) ||
+        !!(parsed.ap2 || parsed.mandates || (parsed.endpoints && (parsed.endpoints.ap2 || parsed.endpoints.payments)));
+      const hasMcp =
+        caps.some((c) => c === 'mcp' || c.startsWith('mcp.')) ||
+        !!(parsed.mcp || (parsed.endpoints && parsed.endpoints.mcp));
+      results.agent_card.declares_ap2 = hasAp2;
+      results.agent_card.declares_mcp = hasMcp;
+    } catch {
+      // Non-JSON agent-card — leave capability flags false.
+    }
+  }
 
-  // 6. Process A2UI (Google Agent-to-UI Protocol)
+  // 6. UCP Manifest — try the spec path first, fall back to the legacy path.
+  if (ucpRes.exists) {
+    results.ucp.exists = true;
+    results.ucp.source = 'ucp-manifest.json';
+  } else if (ucpLegacyRes.exists) {
+    results.ucp.exists = true;
+    results.ucp.source = 'ucp';
+  }
+
+  // 7. AP2 Mandates — endpoint OR agent-card capability declaration.
+  if (ap2Res.exists) {
+    results.ap2.exists = true;
+    results.ap2.source = 'ap2-mandates.json';
+    try {
+      const parsed = JSON.parse(ap2Res.content);
+      results.ap2.version = parsed.version || parsed.ap2_version || null;
+    } catch {}
+  } else if (results.agent_card.declares_ap2) {
+    results.ap2.exists = true;
+    results.ap2.source = 'agent-card-capability';
+  }
+
+  // 8. A2UI (Google Agent-to-UI Protocol)
   if (a2uiRes.exists) {
     results.a2ui.exists = true;
     try {
@@ -109,7 +160,7 @@ async function probeEndpoints(baseUrl) {
     } catch {}
   }
 
-  // 7. Process AG-UI (CopilotKit Agent-User Interaction Protocol)
+  // 9. AG-UI (CopilotKit Agent-User Interaction Protocol)
   if (agUiRes.exists) {
     results.ag_ui.exists = true;
     try {
@@ -118,7 +169,7 @@ async function probeEndpoints(baseUrl) {
     } catch {}
   }
 
-  // 8. Process ACP (Agent Communication Protocol — RESTful)
+  // 10. ACP (Agent Communication Protocol — RESTful)
   if (acpRes.exists) {
     results.acp.exists = true;
     try {
@@ -127,7 +178,7 @@ async function probeEndpoints(baseUrl) {
     } catch {}
   }
 
-  // 9. Process ANP (Agent Network Protocol — W3C DIDs)
+  // 11. ANP (Agent Network Protocol — W3C DIDs)
   if (anpRes.exists) {
     results.anp.exists = true;
   }

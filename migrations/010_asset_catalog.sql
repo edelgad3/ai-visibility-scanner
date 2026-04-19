@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS asset_annotations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   asset_id UUID NOT NULL REFERENCES asset_catalog(id) ON DELETE CASCADE,
   annotation_type TEXT NOT NULL
-    CHECK (annotation_type IN ('aria','schema_org','webmcp','a2ui','llms_txt','semantic_html','agent_card')),
+    CHECK (annotation_type IN ('aria','schema_org','webmcp','a2ui','llms_txt','semantic_html','agent_card','ag_ui','acp','anp')),
   current_value JSONB NOT NULL DEFAULT '{}',
   recommended_value JSONB DEFAULT NULL,
   override_value JSONB DEFAULT NULL,

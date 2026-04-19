@@ -66,6 +66,13 @@ function computeScores(checks) {
   if (anpDetected) agentReady += 4;
   // WebMCP navigator.modelContext registration
   if (checks.protocol_signals?.webmcp_registration?.detected) agentReady += 4;
+  // AP2 Mandates (Client-Install component #8) — endpoint OR agent-card capability
+  if (checks.ap2?.exists) agentReady += 8;
+  // W3C WebMCP components #3 + #4 — human-in-the-loop + agent detection
+  if (checks.protocol_signals?.human_in_loop?.detected) agentReady += 4;
+  if (checks.protocol_signals?.agent_detection?.detected) agentReady += 4;
+  // Ethereal Extra #20 — agent analytics instrumentation
+  if (checks.protocol_signals?.agent_analytics?.detected) agentReady += 4;
   // Infrastructure signals
   if (checks.aeo.semantic_score >= 5) agentReady += 8;
   else if (checks.aeo.semantic_score >= 3) agentReady += 4;
@@ -228,6 +235,43 @@ function generateFindings(checks) {
     });
   }
 
+  // AP2 Mandates (Client-Install component #8)
+  if (!checks.ap2?.exists) {
+    p1.push({
+      action: 'Deploy AP2 Mandates (/.well-known/ap2-mandates.json) or declare AP2 capability in agent-card.json',
+      detail: 'AP2 is the authorization chain that answers "is this agent allowed to buy?" Required for any transactable agent flow. Without it, AP2-aware agents cannot complete purchases on your site.',
+      impact: 'high', source: 'protocol_stack', effort: 'medium',
+      revenue_impact: { monthly_estimate_low: 200, monthly_estimate_mid: 800, monthly_estimate_high: 2000 }
+    });
+  }
+
+  // W3C WebMCP component #3 — human-in-the-loop
+  if (!checks.protocol_signals?.human_in_loop?.detected) {
+    p1.push({
+      action: 'Wire requestUserInteraction() for human-in-the-loop confirmation on destructive or financial actions',
+      detail: 'Without it, AI agents either get blocked on sensitive steps or blow through them without consent. Required for safe AP2 + UCP commerce flows.',
+      impact: 'medium', source: 'webmcp', effort: 'low',
+    });
+  }
+
+  // W3C WebMCP component #4 — agent detection
+  if (!checks.protocol_signals?.agent_detection?.detected) {
+    p1.push({
+      action: 'Handle the event.agentInvoked flag on SubmitEvent to detect agent vs human submissions',
+      detail: 'Without agent detection, you cannot attribute traffic, apply per-agent rate limits, or trigger agent-specific server-side logic.',
+      impact: 'medium', source: 'webmcp', effort: 'low',
+    });
+  }
+
+  // Ethereal Extra #20 — agent analytics
+  if (!checks.protocol_signals?.agent_analytics?.detected) {
+    p2.push({
+      action: 'Instrument agent analytics — log agentInvoked submissions + toolactivated events',
+      detail: 'Without agent analytics you cannot prove retainer ROI (agent traffic %, conversion attribution, tool usage). Required for monthly retainer reports.',
+      impact: 'medium', source: 'extras', effort: 'medium',
+    });
+  }
+
   if (!checks.aeo.has_main) {
     p1.push({
       action: 'Add <main> tag for primary content region',
@@ -262,7 +306,7 @@ function generateFindings(checks) {
 
   if (checks.digital_assets.has_digital_assets && !checks.ucp.exists) {
     p1.push({
-      action: 'Deploy UCP endpoint for autonomous digital asset purchasing',
+      action: 'Deploy /.well-known/ucp-manifest.json for autonomous digital asset purchasing',
       detail: 'AI agents cannot click download buttons — they need structured commerce endpoints.',
       impact: 'high', source: 'digital_assets', effort: 'high',
     });
@@ -280,7 +324,7 @@ function generateFindings(checks) {
 
   if (!checks.ucp.exists && !checks.digital_assets.has_digital_assets) {
     p2.push({
-      action: 'Deploy .well-known/ucp manifest for agentic commerce',
+      action: 'Deploy /.well-known/ucp-manifest.json for agentic commerce',
       detail: 'UCP enables AI procurement agents to discover your services and pricing programmatically.',
       impact: 'low', source: 'aeo', effort: 'medium',
     });
