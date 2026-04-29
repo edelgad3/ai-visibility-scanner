@@ -112,15 +112,41 @@ async function probeEndpoints(baseUrl) {
     results.agent_card.exists = true;
     try {
       const parsed = JSON.parse(agentCardRes.content);
-      const caps = Array.isArray(parsed.capabilities)
-        ? parsed.capabilities.map((c) => (typeof c === 'string' ? c.toLowerCase() : (c && c.name) ? String(c.name).toLowerCase() : ''))
-        : [];
-      results.agent_card.capabilities = caps.filter(Boolean);
+
+      // Capabilities can appear in two shapes:
+      //   1. A2A spec:  { capabilities: { tools: [{name, description, ...}], ... } }
+      //   2. Flat form: { capabilities: ["ap2.payment", "mcp", ...] }
+      // Collect names from both.
+      const names = [];
+      if (Array.isArray(parsed.capabilities)) {
+        for (const c of parsed.capabilities) {
+          if (typeof c === 'string') names.push(c.toLowerCase());
+          else if (c && c.name) names.push(String(c.name).toLowerCase());
+        }
+      } else if (parsed.capabilities && typeof parsed.capabilities === 'object') {
+        const tools = parsed.capabilities.tools;
+        if (Array.isArray(tools)) {
+          for (const t of tools) {
+            if (t && t.name) names.push(String(t.name).toLowerCase());
+          }
+        }
+      }
+      // Also accept top-level tools[] (seen in some agent-card dialects).
+      if (Array.isArray(parsed.tools)) {
+        for (const t of parsed.tools) {
+          if (t && t.name) names.push(String(t.name).toLowerCase());
+        }
+      }
+
+      results.agent_card.capabilities = names;
+
+      const allText = JSON.stringify(parsed).toLowerCase();
       const hasAp2 =
-        caps.some((c) => c.includes('ap2') || c.includes('payment')) ||
-        !!(parsed.ap2 || parsed.mandates || (parsed.endpoints && (parsed.endpoints.ap2 || parsed.endpoints.payments)));
+        names.some((c) => c.includes('ap2') || c.includes('payment') || c.includes('mandate')) ||
+        !!(parsed.ap2 || parsed.mandates || (parsed.endpoints && (parsed.endpoints.ap2 || parsed.endpoints.payments))) ||
+        /\bap2\b/.test(allText);
       const hasMcp =
-        caps.some((c) => c === 'mcp' || c.startsWith('mcp.')) ||
+        names.some((c) => c === 'mcp' || c.startsWith('mcp.') || c.startsWith('mcp_')) ||
         !!(parsed.mcp || (parsed.endpoints && parsed.endpoints.mcp));
       results.agent_card.declares_ap2 = hasAp2;
       results.agent_card.declares_mcp = hasMcp;
